@@ -68,10 +68,10 @@ class Trader:
         ob.place_order(bid, qty, True)    # bid
         ob.place_order(ask, qty, False)   # ask
 
-        # ---- Optional: tiny taker flow so prints always occur ----
-        if self.rng.random() < 0.01:
+        # ---- Optional: taker flow to generate volume ----
+        if self.rng.random() < 0.10:  # 10% chance of market order
             is_buy = self.rng.random() < 0.5
-            ob.market.place_market_order(1, is_buy)
+            ob.market.place_market_order(self.rng.randint(1, 5), is_buy)  # 1-5 units
 
 
     def _place_orders(self) -> None:

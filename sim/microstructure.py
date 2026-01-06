@@ -138,13 +138,16 @@ class OrderBook:
 
 
     def ensure_minimum_liquidity(self, last_price: int | None = None) -> None:
-        # Add 1-lot quotes if one side is empty
+        # Add liquidity if one side is empty or thin
         if last_price is None:
             last_price = self.last_price
-        if not self.buy_book:
-            self._make_order(max(1, last_price - 1), 1, True)
-        if not self.sell_book:
-            self._make_order(last_price + 1, 1, False)
+        min_depth = 20  # minimum units per side
+        if not self.buy_book or sum(self.buy_book.values()) < min_depth:
+            for i in range(1, 6):  # 5 price levels
+                self._make_order(max(1, last_price - i), min_depth // 5, True)
+        if not self.sell_book or sum(self.sell_book.values()) < min_depth:
+            for i in range(1, 6):  # 5 price levels
+                self._make_order(last_price + i, min_depth // 5, False)
 
     def reset_with_price(self, last_price: int) -> None:
         """Hard reset the micro book around a new price level."""

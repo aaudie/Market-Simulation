@@ -35,7 +35,7 @@ class MarketSimulator:
         self.active: bool = True
         self.market_speed: float = 10.0
         self.trader_count: int = 1000
-        self.trader_activity_rate: float = 0.0005
+        self.trader_activity_rate: float = 0.05  # 5% activity per tick
 
         self.chart = Chart()
         self.live_candlestick = Candlestick()
