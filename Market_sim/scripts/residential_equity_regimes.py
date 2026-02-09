@@ -1,9 +1,17 @@
+import sys
+import os
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 
+# Construct absolute path to data file
+script_dir = Path(__file__).resolve().parent
+data_path = script_dir.parent.parent / "RL_Trading" / "data" / "Residential_Equity.csv"
+
 # Read the data
-df = pd.read_csv('../../RL_Trading/data/Residential_Equity.csv')
+df = pd.read_csv(data_path)
 df['datetime'] = pd.to_datetime(df['datetime'])
 
 # Sort by date ascending
@@ -153,6 +161,9 @@ fig.update_layout(
     )
 )
 
-# Save to PNG file
-fig.write_image('residential_equity_regimes.png', width=1100, height=600)
-print("\nChart saved to 'residential_equity_regimes.png'")
+# Save to PNG file in outputs directory
+script_dir = Path(__file__).resolve().parent
+outputs_dir = script_dir.parent / "outputs"
+output_path = outputs_dir / 'residential_equity_regimes.png'
+fig.write_image(str(output_path), width=1100, height=600)
+print(f"\nChart saved to '{output_path}'")

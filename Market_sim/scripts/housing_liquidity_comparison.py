@@ -12,6 +12,15 @@ Key differences:
   - Represents actual REIT market behavior with real liquidity
 """
 
+import sys
+import os
+from pathlib import Path
+
+# Add parent directory to path to allow imports from sim package
+script_dir = Path(__file__).resolve().parent
+parent_dir = script_dir.parent
+sys.path.insert(0, str(parent_dir))
+
 import numpy as np
 import matplotlib.pyplot as plt
 from datetime import datetime
@@ -379,8 +388,13 @@ def plot_comparison(
     ax6.set_title("Key Metrics Comparison", fontsize=14, fontweight='bold', pad=20)
     
     plt.tight_layout()
-    plt.savefig('housing_liquidity_comparison.png', dpi=300, bbox_inches='tight')
-    print("\nPlot saved: housing_liquidity_comparison.png")
+    
+    # Save to outputs directory
+    script_dir = Path(__file__).resolve().parent
+    outputs_dir = script_dir.parent / "outputs"
+    output_path = outputs_dir / 'housing_liquidity_comparison.png'
+    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    print(f"\nPlot saved: {output_path}")
     plt.show()
 
 
@@ -390,7 +404,10 @@ def plot_comparison(
 
 def main():
     # Configuration
-    CSV_PATH = "cre_monthly.csv"
+    # Get path to outputs directory relative to this script
+    script_dir = Path(__file__).resolve().parent
+    outputs_dir = script_dir.parent / "outputs"
+    CSV_PATH = str(outputs_dir / "cre_monthly.csv")
     MONTHS_AHEAD = 120  # Project 10 years into future
     TICKS_PER_CANDLE = 50
     SEED = 42

@@ -7,44 +7,71 @@
 ### 1. Run the Complete Analysis
 
 ```bash
-# Step 1: Analyze real REIT data to extract transition matrix
-python3 analyze_reit_regimes.py
+# Run the complete pipeline (all three analyses)
+python3 scripts/run_complete_analysis.py
 
-# Step 2: Run housing market comparison simulation
-python3 housing_liquidity_comparison.py
+# Or run individually:
+# Step 1: Analyze traditional CRE baseline (72+ years of data)
+python3 scripts/analyze_cre_regimes.py
+
+# Step 2: Analyze real REIT data to extract transition matrix
+python3 scripts/analyze_reit_regimes.py
+
+# Step 3: Run housing market comparison simulation
+python3 scripts/housing_liquidity_comparison.py
 ```
 
 ### 2. View Results
 
 The analysis generates:
+- `CRE_regime_analysis.png` - Traditional CRE baseline (1953-2025)
 - `VNQ_regime_analysis.png` - REIT regime transition analysis
 - `housing_liquidity_comparison.png` - Traditional vs Tokenized comparison
 - `FINDINGS_SUMMARY.md` - Detailed research findings
 
-## Key Finding
+## Key Findings
 
-**Tokenized housing markets (with REIT-like liquidity) spend 47% less time in crisis states compared to traditional illiquid housing markets.**
+**1. Liquidity Creates a 9.8x Volatility Increase**
+- Traditional CRE: 1.80% annualized volatility (illiquid, appraisal-based)
+- REITs (VNQ): 17.70% annualized volatility (liquid, marked-to-market)
 
+**2. Tokenized Housing Spends 47% Less Time in Crisis**
 - Traditional: 46.9% time in stress (volatile/panic)
 - Tokenized: 24.9% time in stress (volatile/panic)
+
+**3. Traditional CRE Has Extreme Regime Persistence**
+- 58.7% of 72 years spent in calm regime (avg 7.1 months per episode)
+- Only 0.5% in panic (4 months total over 72 years!)
+- Slow transitions reflect illiquidity and appraisal smoothing
 
 ## Files Overview
 
 ### Analysis Scripts
 
-1. **`analyze_reit_regimes.py`**
+1. **`analyze_cre_regimes.py`** ⭐ NEW
+   - Analyzes 72+ years of traditional CRE data (1953-2025)
+   - Establishes empirical baseline for illiquid real estate
+   - Calculates transition probabilities from 871 months of data
+   - Shows extreme regime persistence and low volatility
+
+2. **`analyze_reit_regimes.py`**
    - Fetches real REIT data (VNQ ETF)
    - Calculates empirical transition probabilities
    - Generates regime visualization
    - Outputs Python-ready transition matrix
 
-2. **`housing_liquidity_comparison.py`**
+3. **`housing_liquidity_comparison.py`**
    - Simulates traditional vs tokenized housing markets
    - Uses empirical REIT transition matrix
    - Generates comprehensive comparison plots
    - Calculates performance metrics
 
-3. **`main.py`**
+4. **`run_complete_analysis.py`** ⭐ RECOMMENDED
+   - Orchestrates all three analyses in sequence
+   - Generates complete set of visualizations
+   - Provides summary report with key findings
+
+5. **`main.py`**
    - Original demo script for the market simulator
    - Shows basic tokenization concepts
 
@@ -75,23 +102,38 @@ The analysis generates:
 
 ## Methodology
 
-### Step 1: Empirical REIT Analysis
+### Step 1: Traditional CRE Baseline Analysis ⭐ NEW
+
+We establish an empirical baseline using 72+ years of traditional CRE data:
+
+1. Load historical CRE price index (1953-2025, 871 months)
+2. Calculate rolling volatility (6-month window)
+3. Classify into 4 regimes: Calm, Neutral, Volatile, Panic
+4. Estimate transition probabilities empirically
+
+**Result:** A 4×4 transition matrix representing traditional illiquid real estate
+
+**Key Discovery:** CRE shows extreme regime persistence (86% calm persistence) and very low volatility (1.80% annualized), reflecting illiquidity and appraisal smoothing.
+
+### Step 2: Empirical REIT Analysis
 
 We analyze VNQ (Vanguard Real Estate ETF) to understand how liquid real estate markets behave:
 
 1. Fetch 20+ years of monthly REIT data
 2. Calculate rolling volatility (6-month window)
-3. Classify into 4 regimes: Calm, Neutral, Volatile, Panic
+3. Classify into 4 regimes using same thresholds as CRE
 4. Estimate transition probabilities empirically
 
-**Result:** A 4×4 transition matrix representing real REIT market dynamics
+**Result:** A 4×4 transition matrix representing liquid real estate (REITs)
 
-### Step 2: Market Simulation
+**Key Discovery:** REITs are 9.8x more volatile than traditional CRE, with faster regime transitions and different crisis dynamics.
+
+### Step 3: Market Simulation
 
 We simulate two parallel housing markets:
 
 1. **Traditional (Illiquid)**
-   - Assumed transition matrix based on housing characteristics
+   - Uses empirical CRE transition matrix OR assumed matrix
    - Slow transitions, gets stuck in crisis states
    - Represents current housing market
 
@@ -105,31 +147,66 @@ Both simulations:
 - Same calibrated drift and volatility parameters
 - Only difference: regime transition dynamics
 
-### Step 3: Comparison
+### Step 4: Comparison
 
 We compare across multiple dimensions:
 - Time spent in each regime
 - Number and duration of crisis episodes
 - Price volatility and drawdowns
 - Recovery times from shocks
+- Comparison with empirical CRE baseline
 
-## Empirical Transition Matrix (VNQ)
+## Empirical Transition Matrices
 
-From our analysis of 253 months of VNQ data (2005-2026):
+### Traditional CRE (1953-2025) ⭐ NEW
+
+From our analysis of 871 months of traditional CRE data:
 
 ```python
-P_REIT = [
-    [0.82, 0.17, 0.01, 0.00],  # calm    (46% of time, avg 5.3 months)
-    [0.19, 0.77, 0.03, 0.01],  # neutral (42% of time, avg 4.4 months)
-    [0.05, 0.20, 0.75, 0.00],  # volatile (8% of time, avg 4.0 months)
-    [0.00, 0.00, 0.10, 0.90],  # panic    (4% of time, avg 10 months)
+P_CRE_TRADITIONAL = [
+    [0.8591, 0.1389, 0.0020, 0.0000],  # calm    (58.7% of time, avg 7.1 months)
+    [0.2339, 0.7186, 0.0475, 0.0000],  # neutral (34.0% of time, avg 3.5 months)
+    [0.0339, 0.2203, 0.6949, 0.0508],  # volatile (6.8% of time, avg 3.3 months)
+    [0.0000, 0.0000, 0.7500, 0.2500],  # panic    (0.5% of time, avg 1.3 months)
 ]
 ```
 
-**Key Insights:**
-- REITs spend 88% of time in calm/neutral (vs ~53% for housing)
-- Panic is rare (4%) but persistent when it occurs (90%)
-- Strong tendency to avoid crisis states
+**Key Characteristics:**
+- **Very high regime persistence:** 86% calm, 72% neutral, 69% volatile
+- **Extremely rare panic:** Only 0.5% of 72 years (4 months total!)
+- **Very low volatility:** 1.80% annualized (appraisal smoothing effect)
+- **Slow transitions:** Average 7.1 months in calm regime
+
+### REITs - VNQ (2005-2026)
+
+From our analysis of 253 months of VNQ data:
+
+```python
+P_REIT_VNQ = [
+    [0.6667, 0.2778, 0.0556, 0.0000],  # calm    (20% of time, avg 3.6 months)
+    [0.1250, 0.6607, 0.1964, 0.0179],  # neutral (56% of time, avg 4.3 months)
+    [0.0455, 0.2727, 0.5909, 0.0909],  # volatile (22% of time, avg 3.3 months)
+    [0.0000, 0.1333, 0.2667, 0.6000],  # panic    (2% of time, avg 2.0 months)
+]
+```
+
+**Key Characteristics:**
+- **Lower regime persistence:** 67% calm, 66% neutral, 59% volatile
+- **Faster transitions:** More dynamic regime switching
+- **High volatility:** 17.70% annualized (9.8x traditional CRE)
+- **Different crisis pattern:** Panic sticky (60%) but much rarer than volatile states
+
+### Critical Comparison: CRE vs REITs
+
+| Metric | Traditional CRE | REITs (VNQ) | Ratio |
+|--------|----------------|-------------|-------|
+| Annualized Volatility | 1.80% | 17.70% | 9.8x |
+| Calm Persistence | 86% | 67% | 1.3x |
+| Time in Calm | 58.7% | 20% | 2.9x |
+| Time in Panic | 0.5% | 2% | 4.0x |
+| Panic Exit to Neutral | 0% | 13% | ∞ |
+
+**Insight:** Liquidity fundamentally transforms real estate market dynamics, increasing volatility ~10x and creating much faster regime transitions.
 
 ## Requirements
 
@@ -239,10 +316,11 @@ See `FINDINGS_SUMMARY.md` for detailed discussion.
 ## Future Extensions
 
 ### Immediate (can do now):
-1. ✅ Analyze multiple REIT ETFs (IYR, XLRE, RMZ)
-2. ✅ Different time periods (exclude 2008? COVID-only?)
-3. ✅ Sensitivity analysis on regime thresholds
-4. ✅ Export data to CSV for external analysis
+1. ✅ Analyze traditional CRE baseline (DONE - 72+ years empirical)
+2. ✅ Analyze multiple REIT ETFs (IYR, XLRE, RMZ)
+3. ✅ Different time periods (exclude 2008? COVID-only?)
+4. ✅ Sensitivity analysis on regime thresholds
+5. ✅ Export data to CSV for external analysis
 
 ### Phase 2 (requires more work):
 5. ⚡ Train RL agents to trade in both markets
@@ -274,5 +352,5 @@ https://github.com/[your-repo]
 
 ---
 
-**Last Updated:** January 20, 2026  
-**Version:** 1.0 (Empirical REIT Matrix)
+**Last Updated:** February 9, 2026  
+**Version:** 2.0 (Added Empirical CRE Baseline - 72+ Years)

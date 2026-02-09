@@ -2,8 +2,15 @@
 Market Simulator Main Entry Point
 
 Demonstrates tokenized vs traditional CRE market simulation with regime dynamics.
+
+This demo uses EMPIRICAL transition matrices derived from:
+- Traditional CRE: 72+ years of historical data (1953-2025)
+- Tokenized/REIT: 20+ years of VNQ ETF data (2005-2026)
+
+Run 'python3 scripts/run_complete_analysis.py' to regenerate these matrices.
 """
 
+import os
 import matplotlib.pyplot as plt
 
 from sim.market_simulator import MarketSimulator
@@ -100,23 +107,29 @@ def demo_cre_with_tokenization(
 
 
 # =============================================================================
-# Transition Matrices for Regime Dynamics
+# Transition Matrices for Regime Dynamics (EMPIRICAL)
 # =============================================================================
 
-# Traditional housing: slow recovery from stress
+# Traditional CRE: Empirical from 72+ years of data (1953-2025)
+# Source: analyze_cre_regimes.py analysis of cre_monthly.csv
+# Characteristics: High persistence (86% calm), very low volatility (1.8% annual)
+# Only 0.5% of time in panic over 72 years
 P_TRADITIONAL = [
-    [0.85, 0.14, 0.01, 0.00],  # calm
-    [0.10, 0.75, 0.14, 0.01],  # neutral
-    [0.02, 0.18, 0.70, 0.10],  # volatile
-    [0.01, 0.09, 0.30, 0.60],  # panic (gets stuck)
+    [0.8591, 0.1389, 0.0020, 0.0000],  # calm    (58.7% of time, avg 7.1 months)
+    [0.2339, 0.7186, 0.0475, 0.0000],  # neutral (34.0% of time, avg 3.5 months)
+    [0.0339, 0.2203, 0.6949, 0.0508],  # volatile (6.8% of time, avg 3.3 months)
+    [0.0000, 0.0000, 0.7500, 0.2500],  # panic    (0.5% of time, avg 1.3 months)
 ]
 
-# Tokenized housing: faster crisis resolution
+# Tokenized/REIT: Empirical from VNQ data (2005-2026)
+# Source: analyze_reit_regimes.py analysis of VNQ ETF
+# Characteristics: Lower persistence (82% calm), high volatility (22.2% annual)
+# 9.8x more volatile than traditional CRE
 P_TOKENIZED = [
-    [0.90, 0.10, 0.00, 0.00],  # calm
-    [0.08, 0.80, 0.10, 0.02],  # neutral
-    [0.03, 0.25, 0.65, 0.07],  # volatile
-    [0.02, 0.30, 0.40, 0.28],  # panic resolves faster
+    [0.8174, 0.1739, 0.0087, 0.0000],  # calm    (46.0% of time, avg 5.3 months)
+    [0.1887, 0.7736, 0.0283, 0.0094],  # neutral (42.1% of time, avg 4.4 months)
+    [0.0500, 0.2000, 0.7500, 0.0000],  # volatile (7.9% of time, avg 4.0 months)
+    [0.0000, 0.0000, 0.1000, 0.9000],  # panic    (4.0% of time, avg 10.0 months - sticky!)
 ]
 
 
@@ -126,7 +139,10 @@ def main():
     run_simulation_runtime(5.0, 10)
     
     print("\nRunning CRE tokenization demo...")
-    demo_cre_with_tokenization("cre_monthly.csv")
+    # Get the directory where this script is located
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    csv_path = os.path.join(script_dir, "outputs", "cre_monthly.csv")
+    demo_cre_with_tokenization(csv_path)
 
 
 if __name__ == "__main__":
