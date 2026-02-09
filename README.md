@@ -4,7 +4,7 @@ This repository contains two main projects exploring quantitative finance and ma
 
 ---
 
-## 🏘️ Market_Sim: Housing Liquidity Study
+## Market_Sim: Housing Liquidity Study
 
 **Research Question:** To what extent does blockchain-based tokenization improve liquidity, price discovery, and market efficiency in commercial real estate, and how do these effects differ from those observed in traditional CRE markets?
 
@@ -90,7 +90,7 @@ python3 scripts/residential_equity_regimes.py
 
 ---
 
-## 🤖 RL_Trading: Reinforcement Learning for Trading
+## RL_Trading: Reinforcement Learning for Trading
 
 PPO (Proximal Policy Optimization) agents trained to trade forex (EUR/USD) and equities (Equinix) using technical indicators.
 
@@ -153,7 +153,7 @@ python src/test_agent.py
 
 ---
 
-## 📊 Notebooks
+## Notebooks
 
 Jupyter notebooks for exploratory analysis and prototyping:
 - `markov_chains (1).ipynb` - Markov chain analysis and visualization
