@@ -404,10 +404,10 @@ def plot_comparison(
 
 def main():
     # Configuration
-    # Get path to outputs directory relative to this script
+    # Get path to data directory relative to this script
     script_dir = Path(__file__).resolve().parent
-    outputs_dir = script_dir.parent / "outputs"
-    CSV_PATH = str(outputs_dir / "cre_monthly.csv")
+    data_dir = script_dir.parent / "data"
+    CSV_PATH = str(data_dir / "cre_monthly.csv")
     MONTHS_AHEAD = 120  # Project 10 years into future
     TICKS_PER_CANDLE = 50
     SEED = 42

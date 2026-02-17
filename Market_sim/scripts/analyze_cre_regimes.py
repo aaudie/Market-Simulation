@@ -177,8 +177,8 @@ def load_cre_data() -> pd.DataFrame:
     print(f"\nLoading traditional CRE data from cre_monthly.csv...")
     
     # Construct path to data file
-    outputs_dir = script_dir.parent / "outputs"
-    data_path = outputs_dir / "cre_monthly.csv"
+    data_dir = script_dir.parent / "data"
+    data_path = data_dir / "cre_monthly.csv"
     
     if not data_path.exists():
         raise FileNotFoundError(f"CRE data file not found: {data_path}")

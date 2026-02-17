@@ -8,7 +8,7 @@ import plotly.graph_objects as go
 
 # Construct absolute path to data file
 script_dir = Path(__file__).resolve().parent
-data_path = script_dir.parent.parent / "RL_Trading" / "data" / "Residential_Equity.csv"
+data_path = script_dir.parent / "data" / "Residential_Equity.csv"
 
 # Read the data
 df = pd.read_csv(data_path)

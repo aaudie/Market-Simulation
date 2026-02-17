@@ -141,7 +141,7 @@ def main():
     print("\nRunning CRE tokenization demo...")
     # Get the directory where this script is located
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    csv_path = os.path.join(script_dir, "outputs", "cre_monthly.csv")
+    csv_path = os.path.join(script_dir, "data", "cre_monthly.csv")
     demo_cre_with_tokenization(csv_path)
 
 
