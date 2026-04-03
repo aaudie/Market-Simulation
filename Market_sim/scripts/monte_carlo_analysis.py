@@ -1,0 +1,340 @@
+"""
+Layer 2: Monte Carlo Analysis
+
+Runs N=5000 independent simulations using each transition matrix.
+Each path is a fast Markov-chain + GBM draw (no microstructure overhead),
+making 5000 × 240-month paths complete in seconds.
+
+For each path the script records:
+  - % time in stress (volatile + panic)
+  - number of panic episodes
+  - average panic duration (months)
+  - maximum drawdown (%)
+  - annualised price volatility (%)
+  - total return over the horizon (%)
+
+Results are reported as mean ± std with 95 % confidence intervals and
+Welch's independent-samples t-tests for statistical significance.
+
+Calibrated parameters (from CRE monthly 1953-2025):
+  μ_monthly = 0.0008  (0.08 % / month → 0.96 % / year)
+  σ_monthly = 0.0052  (0.52 % / month → 1.80 % / year)
+
+Regime volatility multipliers (from sim/regimes.py):
+  calm=0.8, neutral=1.0, volatile=1.5, panic=2.2
+"""
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
+from scipy import stats
+
+
+# =============================================================================
+# PARAMETERS
+# =============================================================================
+
+STATES      = ["calm", "neutral", "volatile", "panic"]
+STATE_IDX   = {s: i for i, s in enumerate(STATES)}
+VOL_MULT    = {"calm": 0.8, "neutral": 1.0, "volatile": 1.5, "panic": 2.2}
+
+MU_MONTHLY  = 0.0008   # calibrated monthly drift (CRE 1953-2025)
+SIG_MONTHLY = 0.0052   # calibrated monthly vol   (CRE 1953-2025)
+
+N_PATHS     = 5_000    # number of Monte Carlo paths
+HORIZON     = 240      # months per path (20 years)
+START_STATE = "neutral"
+RNG_SEED    = 0
+
+P_TRADITIONAL = np.array([
+    [0.85, 0.14, 0.01, 0.00],
+    [0.10, 0.75, 0.14, 0.01],
+    [0.02, 0.18, 0.70, 0.10],
+    [0.01, 0.09, 0.30, 0.60],
+])
+
+P_TOKENIZED = np.array([
+    [0.8174, 0.1739, 0.0087, 0.0000],
+    [0.1887, 0.7736, 0.0283, 0.0094],
+    [0.0500, 0.2000, 0.7500, 0.0000],
+    [0.0000, 0.0000, 0.1000, 0.9000],
+])
+
+
+# =============================================================================
+# SIMULATION ENGINE
+# =============================================================================
+
+def _run_paths(
+    P: np.ndarray,
+    n_paths: int,
+    horizon: int,
+    mu: float,
+    sigma_base: float,
+    start_state: str,
+    rng: np.random.Generator,
+) -> dict:
+    """
+    Vectorised Monte Carlo: sample regime paths and GBM prices.
+
+    For each monthly step:
+      1. Draw next regime using the row of P for the current state.
+      2. Apply regime vol multiplier.
+      3. Draw log-return ~ N(mu - 0.5σ², σ²) (Itô correction included).
+
+    Returns a dict of metric arrays, one value per path.
+    """
+    n_states = len(STATES)
+    vol_mult = np.array([VOL_MULT[s] for s in STATES])   # shape (4,)
+    cumP     = np.cumsum(P, axis=1)                        # CDF for sampling
+
+    # --- regime paths (n_paths × horizon) ------------------------------------
+    regimes = np.zeros((n_paths, horizon), dtype=np.int8)
+    state   = np.full(n_paths, STATE_IDX[start_state], dtype=np.int8)
+
+    for t in range(horizon):
+        u = rng.random(n_paths)
+        for s in range(n_states):
+            mask = state == s
+            if not mask.any():
+                continue
+            cdf = cumP[s]
+            next_s = np.searchsorted(cdf, u[mask])
+            next_s = np.clip(next_s, 0, n_states - 1)
+            state[mask] = next_s
+        regimes[:, t] = state
+
+    # --- price paths (n_paths × horizon) -------------------------------------
+    sig_t  = vol_mult[regimes] * sigma_base             # (n_paths, horizon)
+    z      = rng.standard_normal((n_paths, horizon))
+    log_r  = (mu - 0.5 * sig_t**2) + sig_t * z         # monthly log-returns
+    log_p  = np.cumsum(log_r, axis=1)                   # cumulative log-price
+    prices = np.exp(log_p)                               # relative to P0 = 1
+
+    # --- metrics per path ----------------------------------------------------
+    is_volatile = (regimes == 2)
+    is_panic    = (regimes == 3)
+    is_stress   = is_volatile | is_panic
+
+    stress_pct  = is_stress.mean(axis=1) * 100.0
+
+    # panic episode count and average duration
+    panic_episodes = np.zeros(n_paths, dtype=float)
+    panic_dur_mean = np.zeros(n_paths, dtype=float)
+    for p in range(n_paths):
+        seq = is_panic[p]
+        starts = np.where(np.diff(seq.astype(int), prepend=0) == 1)[0]
+        ends   = np.where(np.diff(seq.astype(int), append=0) == -1)[0]
+        panic_episodes[p] = len(starts)
+        if len(starts):
+            panic_dur_mean[p] = np.mean(ends - starts + 1)
+
+    # max drawdown
+    peak    = np.maximum.accumulate(prices, axis=1)
+    dd      = (prices - peak) / peak
+    max_dd  = dd.min(axis=1) * 100.0                    # negative values
+
+    # annualised volatility
+    ann_vol = log_r.std(axis=1) * np.sqrt(12) * 100.0
+
+    # total return
+    total_ret = (prices[:, -1] - 1.0) * 100.0
+
+    return {
+        "stress_pct":     stress_pct,
+        "panic_episodes": panic_episodes,
+        "panic_dur_mean": panic_dur_mean,
+        "max_drawdown":   max_dd,
+        "ann_vol":        ann_vol,
+        "total_return":   total_ret,
+        "_regimes":       regimes,
+        "_prices":        prices,
+    }
+
+
+# =============================================================================
+# STATISTICAL REPORTING
+# =============================================================================
+
+def _ci95(arr: np.ndarray) -> tuple:
+    """Return (mean, half-width of 95 % CI) using the t-distribution."""
+    n   = len(arr)
+    m   = arr.mean()
+    se  = arr.std(ddof=1) / np.sqrt(n)
+    hw  = stats.t.ppf(0.975, df=n - 1) * se
+    return m, hw
+
+
+def _pval_str(p: float) -> str:
+    if p < 0.001:
+        return "p < 0.001"
+    if p < 0.01:
+        return f"p = {p:.3f}"
+    return f"p = {p:.3f}"
+
+
+def print_mc_summary(res_t: dict, res_k: dict) -> None:
+    METRICS = [
+        ("stress_pct",     "Time in stress (%)",         False),
+        ("panic_episodes", "Panic episodes",              False),
+        ("panic_dur_mean", "Avg panic duration (mo)",     False),
+        ("max_drawdown",   "Max drawdown (%)",            False),
+        ("ann_vol",        "Annualised volatility (%)",   None),
+        ("total_return",   "Total return (%)",            True),
+    ]
+
+    print(f"\n{'='*80}")
+    print(f"  LAYER 2 RESULTS  ({N_PATHS:,} paths × {HORIZON} months  |  95 % CI in brackets)")
+    print(f"{'='*80}")
+    print(f"  {'Metric':<30} {'Traditional':>22}  {'Tokenized':>22}  {'Sig.'}")
+    print(f"  {'-'*76}")
+
+    for key, label, lower_is_better in METRICS:
+        mt, ht = _ci95(res_t[key])
+        mk, hk = _ci95(res_k[key])
+        _, pval = stats.ttest_ind(res_t[key], res_k[key], equal_var=False)
+
+        t_str = f"{mt:+7.2f} [{mt-ht:+.2f}, {mt+ht:+.2f}]"
+        k_str = f"{mk:+7.2f} [{mk-hk:+.2f}, {mk+hk:+.2f}]"
+        print(f"  {label:<30} {t_str:>22}  {k_str:>22}  {_pval_str(pval)}")
+
+    print(f"{'='*80}")
+
+
+# =============================================================================
+# VISUALISATION
+# =============================================================================
+
+def plot_mc_results(res_t: dict, res_k: dict) -> None:
+    PLOT_KEYS = [
+        ("stress_pct",     "Time in stress (%)",         "%"),
+        ("panic_episodes", "Panic episodes (20 yr)",      ""),
+        ("panic_dur_mean", "Avg panic duration (mo)",     "mo"),
+        ("max_drawdown",   "Max drawdown (%)",            "%"),
+        ("ann_vol",        "Annualised volatility (%)",   "%"),
+        ("total_return",   "Total return (%)",            "%"),
+    ]
+
+    fig = plt.figure(figsize=(18, 10))
+    fig.suptitle(
+        f"Layer 2: Monte Carlo Analysis — {N_PATHS:,} Paths × {HORIZON} Months\n"
+        "Distribution of outcomes: Traditional vs Tokenized CRE",
+        fontsize=14, fontweight="bold", y=0.99,
+    )
+    gs = gridspec.GridSpec(2, 3, figure=fig, hspace=0.48, wspace=0.35)
+
+    colors = {"Traditional": "#2c3e50", "Tokenized": "#16a085"}
+
+    for idx, (key, label, unit) in enumerate(PLOT_KEYS):
+        ax = fig.add_subplot(gs[idx // 3, idx % 3])
+        dt = res_t[key]
+        dk = res_k[key]
+
+        # histogram (shared bins)
+        combined = np.concatenate([dt, dk])
+        bins = np.histogram_bin_edges(combined, bins=50)
+
+        ax.hist(dt, bins=bins, alpha=0.6, color=colors["Traditional"],
+                label="Traditional", density=True, edgecolor="none")
+        ax.hist(dk, bins=bins, alpha=0.6, color=colors["Tokenized"],
+                label="Tokenized",   density=True, edgecolor="none")
+
+        # vertical mean lines
+        ax.axvline(dt.mean(), color=colors["Traditional"], linewidth=2.0,
+                   linestyle="--", label=f"Trad. μ={dt.mean():.1f}{unit}")
+        ax.axvline(dk.mean(), color=colors["Tokenized"],   linewidth=2.0,
+                   linestyle="--", label=f"Tok.  μ={dk.mean():.1f}{unit}")
+
+        _, pval = stats.ttest_ind(dt, dk, equal_var=False)
+        ax.set_title(f"{label}\n{_pval_str(pval)}", fontweight="bold", fontsize=9)
+        ax.set_xlabel(f"{label}" + (f" ({unit})" if unit else ""), fontsize=8)
+        ax.set_ylabel("Density", fontsize=8)
+        ax.legend(fontsize=7)
+        ax.grid(True, alpha=0.3)
+
+    outputs_dir = Path(__file__).resolve().parent.parent / "outputs"
+    out_path = outputs_dir / "layer2_monte_carlo.png"
+    plt.savefig(out_path, dpi=300, bbox_inches="tight")
+    print(f"\n  Plot saved: {out_path}")
+    plt.show()
+
+
+def plot_regime_heatmap(res_t: dict, res_k: dict) -> None:
+    """Show the average fraction of time in each regime month-by-month."""
+    n_states = len(STATES)
+
+    def regime_freq(regimes: np.ndarray) -> np.ndarray:
+        freq = np.zeros((HORIZON, n_states))
+        for s in range(n_states):
+            freq[:, s] = (regimes == s).mean(axis=0)
+        return freq
+
+    freq_t = regime_freq(res_t["_regimes"])
+    freq_k = regime_freq(res_k["_regimes"])
+
+    state_colors = ["#2ecc71", "#3498db", "#f39c12", "#e74c3c"]
+    state_labels = ["Calm", "Neutral", "Volatile", "Panic"]
+
+    fig, axes = plt.subplots(1, 2, figsize=(16, 5), sharey=True)
+    fig.suptitle(
+        "Layer 2: Average Regime Occupancy over Time\n"
+        f"(mean across {N_PATHS:,} paths)",
+        fontsize=13, fontweight="bold",
+    )
+
+    for ax, freq, title in zip(axes, [freq_t, freq_k],
+                                ["Traditional CRE", "Tokenized CRE"]):
+        bottom = np.zeros(HORIZON)
+        months = np.arange(HORIZON)
+        for s, (col, lbl) in enumerate(zip(state_colors, state_labels)):
+            ax.fill_between(months, bottom, bottom + freq[:, s] * 100,
+                            alpha=0.85, color=col, label=lbl)
+            bottom += freq[:, s] * 100
+        ax.set_title(title, fontweight="bold", fontsize=11)
+        ax.set_xlabel("Month"); ax.set_ylabel("% of paths in regime")
+        ax.set_xlim(0, HORIZON - 1); ax.set_ylim(0, 100)
+        ax.legend(loc="upper right", fontsize=8)
+        ax.grid(True, alpha=0.2)
+
+    plt.tight_layout()
+    outputs_dir = Path(__file__).resolve().parent.parent / "outputs"
+    out_path = outputs_dir / "layer2_regime_occupancy.png"
+    plt.savefig(out_path, dpi=300, bbox_inches="tight")
+    print(f"  Plot saved: {out_path}")
+    plt.show()
+
+
+# =============================================================================
+# MAIN
+# =============================================================================
+
+def main():
+    print("\n" + "=" * 70)
+    print(f"  LAYER 2: MONTE CARLO ANALYSIS")
+    print(f"  {N_PATHS:,} paths × {HORIZON} months ({HORIZON//12} years)")
+    print("=" * 70)
+
+    rng = np.random.default_rng(RNG_SEED)
+
+    print(f"\n  Running Traditional paths…")
+    res_t = _run_paths(P_TRADITIONAL, N_PATHS, HORIZON,
+                       MU_MONTHLY, SIG_MONTHLY, START_STATE, rng)
+
+    print(f"  Running Tokenized paths…")
+    res_k = _run_paths(P_TOKENIZED,   N_PATHS, HORIZON,
+                       MU_MONTHLY, SIG_MONTHLY, START_STATE, rng)
+
+    print_mc_summary(res_t, res_k)
+    plot_mc_results(res_t, res_k)
+    plot_regime_heatmap(res_t, res_k)
+
+    print("\n  Layer 2 complete.")
+
+
+if __name__ == "__main__":
+    main()
