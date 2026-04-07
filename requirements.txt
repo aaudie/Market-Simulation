@@ -4,6 +4,7 @@ plotly
 stable_baselines3
 matplotlib
 ta
+scipy
 
 # Deep Markov Model Requirements
 # Install with: pip install -r requirements_dmm.txt
