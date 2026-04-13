@@ -21,6 +21,8 @@ class MarketSimulator:
         self.use_markov_regimes: bool = False
         self.regime_chain: Optional[RegimeMarkovChain] = None
         self._markov_regime: str = "neutral"   # last Markov state (macro)
+        self._markov_traditional_P: Optional[List[List[float]]] = None
+        self._markov_tokenized_P: Optional[List[List[float]]] = None
 
         # ---------- volatility regime state ----------
         self.base_sigma_monthly: float = 0.03       # default; replaced when scenario attached
@@ -82,6 +84,35 @@ class MarketSimulator:
         self.order_book.market.anchor_weight = self.anchor_weight
         self.order_book.market.adoption = self.adoption
         self.order_book.market.month_idx = self.month_idx
+
+        # If both endpoint matrices are configured, interpolate by adoption.
+        if (
+            self.use_markov_regimes
+            and self.regime_chain is not None
+            and self._markov_traditional_P is not None
+            and self._markov_tokenized_P is not None
+        ):
+            self.regime_chain.set_transition_matrix(self._interpolate_transition_matrix(self.adoption))
+
+    def _interpolate_transition_matrix(self, alpha: float) -> List[List[float]]:
+        """
+        Interpolate transition matrix between traditional and tokenized endpoints.
+        """
+        if self._markov_traditional_P is None or self._markov_tokenized_P is None:
+            raise ValueError("Transition matrix endpoints are not configured.")
+
+        a = max(0.0, min(1.0, alpha))
+        rows = len(self._markov_traditional_P)
+        cols = len(self._markov_traditional_P[0]) if rows > 0 else 0
+        out: List[List[float]] = []
+        for i in range(rows):
+            row = []
+            for j in range(cols):
+                p_trad = self._markov_traditional_P[i][j]
+                p_tok = self._markov_tokenized_P[i][j]
+                row.append((1.0 - a) * p_trad + a * p_tok)
+            out.append(row)
+        return out
 
 
     # ---------- Volatility regime updater ----------
@@ -169,12 +200,34 @@ class MarketSimulator:
         self.use_markov_regimes = True
         self.regime_chain = RegimeMarkovChain(STATES, P, start_state=start_state, rng=self.rng)
         self._markov_regime = start_state
+        self._markov_traditional_P = None
+        self._markov_tokenized_P = None
+
+    def enable_adoption_markov_regimes(
+        self,
+        P_traditional: List[List[float]],
+        P_tokenized: List[List[float]],
+        start_state: str = "neutral",
+    ) -> None:
+        """
+        Enable Markov regimes using adoption-weighted matrix interpolation.
+        P(alpha) = (1 - alpha) * P_traditional + alpha * P_tokenized
+        """
+        self._markov_traditional_P = [row[:] for row in P_traditional]
+        self._markov_tokenized_P = [row[:] for row in P_tokenized]
+
+        P0 = self._interpolate_transition_matrix(self.adoption)
+        self.use_markov_regimes = True
+        self.regime_chain = RegimeMarkovChain(STATES, P0, start_state=start_state, rng=self.rng)
+        self._markov_regime = start_state
 
     #Optional toggle off
     def disable_markov_regimes(self) -> None:
         self.use_markov_regimes = False
         self.regime_chain = None
         self._markov_regime = "neutral"
+        self._markov_traditional_P = None
+        self._markov_tokenized_P = None
 
 
     # ---------- Fundamental step (monthly) ----------

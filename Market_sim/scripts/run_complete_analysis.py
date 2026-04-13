@@ -6,18 +6,22 @@ End-to-end analysis workflow:
   EMPIRICAL FOUNDATIONS
     Step 1 — Traditional CRE baseline: 72+ years of historical data
     Step 2 — REIT regime analysis: empirical VNQ transition matrix
+    Step 3 — Bayesian CRE transition matrix: pooled Dirichlet-Multinomial
+               estimate from net-lease REIT basket (O / NNN / WPC / ADC);
+               saves bayesian_cre_transition.npz used by Layer 2
 
   THESIS ANALYSIS (three-layer quantitative framework)
-    Step 3 — Layer 1: Analytical Markov chain results
+    Step 4 — Layer 1: Analytical Markov chain results
                (stationary distributions, mean first passage times,
                 sojourn times, bootstrap confidence intervals)
-    Step 4 — Layer 2: Monte Carlo analysis
-               (5 000 paths × 20 years, distributional results, t-tests)
-    Step 5 — Layer 3: Adoption sensitivity sweep
+    Step 5 — Layer 2: Monte Carlo analysis
+               (5 000 paths × 20 years, distributional results, t-tests;
+                P_TOKENIZED drawn from Bayesian posterior in Step 3)
+    Step 6 — Layer 3: Adoption sensitivity sweep
                (RWA empirical adoption curve + α-interpolation sensitivity)
 
   SIMULATION BENCHMARK
-    Step 6 — Housing market comparison (single-run visualisation)
+    Step 7 — Housing market comparison (single-run visualisation)
 
 Usage:
     python3 run_complete_analysis.py
@@ -112,9 +116,20 @@ def main() -> int:
     )
 
     # ==========================================================================
-    # Step 3: Layer 1 — Analytical Markov Chain Results
+    # Step 3: Bayesian CRE Transition Matrix
     # ==========================================================================
-    print_header("STEP 3: LAYER 1 — ANALYTICAL MARKOV CHAIN ANALYSIS")
+    print_header("STEP 3: BAYESIAN CRE TRANSITION MATRIX (O / NNN / WPC / ADC)")
+    print("Pooling transition counts across net-lease REITs; fitting Dirichlet posterior...")
+    print("Saves bayesian_cre_transition.npz — used as P_TOKENIZED in Step 5.")
+    results['bayesian_cre'] = run_script(
+        str(script_dir / 'bayesian_cre_transition.py'),
+        'Bayesian CRE Transition Matrix'
+    )
+
+    # ==========================================================================
+    # Step 4: Layer 1 — Analytical Markov Chain Results
+    # ==========================================================================
+    print_header("STEP 4: LAYER 1 — ANALYTICAL MARKOV CHAIN ANALYSIS")
     print("Computing stationary distributions, passage times, and bootstrap CIs...")
     results['layer1'] = run_script(
         str(script_dir / 'analytical_markov.py'),
@@ -122,19 +137,20 @@ def main() -> int:
     )
 
     # ==========================================================================
-    # Step 4: Layer 2 — Monte Carlo Analysis
+    # Step 5: Layer 2 — Monte Carlo Analysis
     # ==========================================================================
-    print_header("STEP 4: LAYER 2 — MONTE CARLO ANALYSIS")
+    print_header("STEP 5: LAYER 2 — MONTE CARLO ANALYSIS")
     print("Running 5,000 paths × 240 months. Reporting distributions + t-tests...")
+    print("P_TOKENIZED loaded from Bayesian posterior (Step 3).")
     results['layer2'] = run_script(
         str(script_dir / 'monte_carlo_analysis.py'),
         'Monte Carlo Analysis'
     )
 
     # ==========================================================================
-    # Step 5: Layer 3 — Adoption Sensitivity (RWA data + α-sweep)
+    # Step 6: Layer 3 — Adoption Sensitivity (RWA data + α-sweep)
     # ==========================================================================
-    print_header("STEP 5: LAYER 3 — ADOPTION SENSITIVITY ANALYSIS")
+    print_header("STEP 6: LAYER 3 — ADOPTION SENSITIVITY ANALYSIS")
     print("Fitting sigmoid to RWA TVL data; sweeping α from 0 → 1...")
     results['layer3'] = run_script(
         str(script_dir / 'adoption_sensitivity.py'),
@@ -142,10 +158,11 @@ def main() -> int:
     )
 
     # ==========================================================================
-    # Step 6: Housing Market Simulation (single-run benchmark)
+    # Step 7: Housing Market Simulation (single-run benchmark)
     # ==========================================================================
-    print_header("STEP 6: HOUSING MARKET SIMULATION (BENCHMARK)")
+    print_header("STEP 7: HOUSING MARKET SIMULATION (BENCHMARK)")
     print("Running single-path traditional vs tokenized simulation...")
+    print("Tokenized path uses adoption-interpolated Markov matrix toward Bayesian endpoint.")
     results['housing_sim'] = run_script(
         str(script_dir / 'housing_liquidity_comparison.py'),
         'Housing Market Comparison'
@@ -159,10 +176,11 @@ def main() -> int:
     step_labels = {
         'cre_analysis': 'Step 1 — CRE Baseline Analysis',
         'reit_analysis': 'Step 2 — REIT Regime Analysis',
-        'layer1':        'Step 3 — Layer 1 Analytical Markov',
-        'layer2':        'Step 4 — Layer 2 Monte Carlo',
-        'layer3':        'Step 5 — Layer 3 Adoption Sensitivity',
-        'housing_sim':   'Step 6 — Housing Market Simulation',
+        'bayesian_cre':  'Step 3 — Bayesian CRE Transition Matrix',
+        'layer1':        'Step 4 — Layer 1 Analytical Markov',
+        'layer2':        'Step 5 — Layer 2 Monte Carlo',
+        'layer3':        'Step 6 — Layer 3 Adoption Sensitivity',
+        'housing_sim':   'Step 7 — Housing Market Simulation',
     }
     print("\n  Results Summary:")
     for key, label in step_labels.items():
@@ -174,14 +192,16 @@ def main() -> int:
         print("\n  All analyses completed successfully!")
         print(f"\n  Generated output files (in {outputs_dir}):")
         files = [
-            ("CRE_regime_analysis.png",         "Step 1 — CRE regime chart"),
+            ("CRE_regime_analysis.png",          "Step 1 — CRE regime chart"),
             ("VNQ_regime_analysis.png",          "Step 2 — REIT regime chart"),
-            ("layer1_analytical_markov.png",     "Step 3 — Stationary distributions + passage times"),
-            ("layer2_monte_carlo.png",           "Step 4 — Monte Carlo distributions"),
-            ("layer2_regime_occupancy.png",      "Step 4 — Regime occupancy over time"),
-            ("layer3_adoption_curve.png",        "Step 5 — Empirical RWA adoption sigmoid"),
-            ("layer3_sensitivity_sweep.png",     "Step 5 — Sensitivity curves vs alpha"),
-            ("housing_liquidity_comparison.png", "Step 6 — Single-run comparison"),
+            ("bayesian_cre_transition.png",      "Step 3 — Bayesian posterior heatmap + diagnostics"),
+            ("bayesian_cre_transition.npz",      "Step 3 — Posterior samples (P_mean, CI, counts)"),
+            ("layer1_analytical_markov.png",     "Step 4 — Stationary distributions + passage times"),
+            ("layer2_monte_carlo.png",           "Step 5 — Monte Carlo distributions"),
+            ("layer2_regime_occupancy.png",      "Step 5 — Regime occupancy over time"),
+            ("layer3_adoption_curve.png",        "Step 6 — Empirical RWA adoption sigmoid"),
+            ("layer3_sensitivity_sweep.png",     "Step 6 — Sensitivity curves vs alpha"),
+            ("housing_liquidity_comparison.png", "Step 7 — Single-run comparison"),
         ]
         for fname, desc in files:
             exists = (outputs_dir / fname).exists()

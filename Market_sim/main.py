@@ -11,7 +11,10 @@ Run 'python3 scripts/run_complete_analysis.py' to regenerate these matrices.
 """
 
 import os
+from pathlib import Path
+
 import matplotlib.pyplot as plt
+import numpy as np
 
 from sim.market_simulator import MarketSimulator
 from sim.data_loader import load_cre_csv
@@ -50,6 +53,13 @@ def demo_cre_with_tokenization(
     sim = MarketSimulator()
     history = load_cre_csv(path_to_csv)
     calib = calibrate_from_history(history)
+
+    # Centre adoption sigmoid on the projection window so the interpolation
+    # actually ramps during forward simulation rather than saturating during replay.
+    sim.adoption_midpoint = len(history) + months_ahead // 2
+
+    # Keep adoption dynamics intact while making Markov transitions adoption-aware.
+    sim.enable_adoption_markov_regimes(P_TRADITIONAL, load_tokenized_transition_matrix())
 
     # Calculate Merton optimal portfolio weight
     r_annual = 0.02
@@ -131,6 +141,17 @@ P_TOKENIZED = [
     [0.0500, 0.2000, 0.7500, 0.0000],  # volatile (7.9% of time, avg 4.0 months)
     [0.0000, 0.0000, 0.1000, 0.9000],  # panic    (4.0% of time, avg 10.0 months - sticky!)
 ]
+
+
+def load_tokenized_transition_matrix() -> list[list[float]]:
+    """
+    Prefer Bayesian posterior mean matrix for tokenized endpoint dynamics.
+    Falls back to empirical VNQ matrix if the Bayesian artifact is unavailable.
+    """
+    npz_path = Path(__file__).resolve().parent / "outputs" / "bayesian_cre_transition.npz"
+    if npz_path.exists():
+        return np.load(npz_path)["P_mean"].tolist()
+    return P_TOKENIZED
 
 
 def main():
