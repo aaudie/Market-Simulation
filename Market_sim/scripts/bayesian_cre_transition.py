@@ -29,19 +29,18 @@ regimes tend to persist:
     alpha[k, k]   = PRIOR_PERSISTENCE   (e.g. 5.0)
     alpha[k, j≠k] = PRIOR_OFFDIAG       (e.g. 1.0)
 
-REIT Basket (Net Lease CRE – homogeneous peer group)
------------------------------------------------------
-Ticker  Name                  Why included
-------  --------------------  ---------------------------
-O       Realty Income         Largest net lease REIT, deep history
-NNN     NNN REIT              Pure-play triple-net, ~30yr history
-WPC     W. P. Carey           Diversified net lease, long history
-ADC     Agree Realty          Smaller / higher-quality tenants
+REIT Basket (net-lease names + liquid ETF anchor)
+-------------------------------------------------
+Ticker  Name                      Why included
+------  ------------------------  -------------------------------------------
+O       Realty Income             Largest net lease REIT, deep history
+NNN     NNN REIT                  Pure-play triple-net, ~30yr history
+WPC     W. P. Carey               Diversified net lease, long history
+ADC     Agree Realty              Smaller / higher-quality tenants
+VNQ     Vanguard Real Estate ETF  Broad listed real estate; liquid benchmark
 
-All four are NYSE-listed, operate the same business model (long-term
-triple-net leases on single-tenant commercial properties), and respond
-to the same macro / credit / cap-rate drivers. This makes their shared
-latent state a clean signal for the CRE asset class.
+O, NNN, WPC, and ADC are a homogeneous triple-net peer group; VNQ adds a
+diversified, high-liquidity signal that still loads on CRE macro drivers.
 
 Outputs
 -------
@@ -101,12 +100,13 @@ N_POSTERIOR_SAMPLES: int = 5_000
 START_DATE: str = "2005-01-01 00:00:00"
 END_DATE: str   = "2026-01-01 00:00:00"
 
-# Net Lease CRE REIT basket (homogeneous peer group)
+# Net-lease CRE names + VNQ (broad liquid real estate ETF)
 CRE_REITS: Dict[str, str] = {
     "O":   "Realty Income",
     "NNN": "NNN REIT",
     "WPC": "W. P. Carey",
     "ADC": "Agree Realty",
+    "VNQ": "Vanguard Real Estate ETF",
 }
 
 
@@ -284,7 +284,7 @@ def plot_results(
     fig = plt.figure(figsize=(18, 12))
     fig.suptitle(
         "Bayesian Pooled CRE Transition Matrix\n"
-        "Net Lease REIT Basket: O · NNN · WPC · ADC",
+        "Pooled basket: O · NNN · WPC · ADC · VNQ",
         fontsize=15,
         fontweight="bold",
         y=1.01,

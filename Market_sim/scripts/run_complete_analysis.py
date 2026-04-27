@@ -7,13 +7,13 @@ End-to-end analysis workflow:
     Step 1 — Traditional CRE baseline: 72+ years of historical data
     Step 2 — REIT regime analysis: empirical VNQ transition matrix
     Step 3 — Bayesian CRE transition matrix: pooled Dirichlet-Multinomial
-               estimate from net-lease REIT basket (O / NNN / WPC / ADC);
+               estimate from pooled basket (O / NNN / WPC / ADC / VNQ);
                saves bayesian_cre_transition.npz used by Layer 2
 
   THESIS ANALYSIS (three-layer quantitative framework)
     Step 4 — Layer 1: Analytical Markov chain results
                (stationary distributions, mean first passage times,
-                sojourn times, bootstrap confidence intervals)
+                sojourn times, bootstrap CIs; P_TOKENIZED = Bayesian P_mean)
     Step 5 — Layer 2: Monte Carlo analysis
                (5 000 paths × 20 years, distributional results, t-tests;
                 P_TOKENIZED drawn from Bayesian posterior in Step 3)
@@ -118,7 +118,7 @@ def main() -> int:
     # ==========================================================================
     # Step 3: Bayesian CRE Transition Matrix
     # ==========================================================================
-    print_header("STEP 3: BAYESIAN CRE TRANSITION MATRIX (O / NNN / WPC / ADC)")
+    print_header("STEP 3: BAYESIAN CRE TRANSITION MATRIX (O / NNN / WPC / ADC / VNQ)")
     print("Pooling transition counts across net-lease REITs; fitting Dirichlet posterior...")
     print("Saves bayesian_cre_transition.npz — used as P_TOKENIZED in Step 5.")
     results['bayesian_cre'] = run_script(

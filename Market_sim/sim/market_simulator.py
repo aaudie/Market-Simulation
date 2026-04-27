@@ -32,6 +32,7 @@ class MarketSimulator:
         self._ret_window: List[float] = []          # rolling window of log returns
         self._regime_window: int = 6                # lookback in "months"
         self._last_fundamental_price: Optional[float] = None
+        self._last_micro_price: Optional[float] = None
 
         # ---------- microstructure + agents ----------
         self.active: bool = True
@@ -67,6 +68,9 @@ class MarketSimulator:
         self._micro_scaled_once: bool = False  # scale micro to fundamental only at month 0
 
         self._micro_initialized: bool = False   #flag
+        self.use_micro_feedback: bool = False
+        self.regime_micro_weight: float = 0.0
+        self.fundamental_micro_feedback: float = 0.0
 
     def _sigmoid(self, x: float) -> float:
         import math
@@ -114,6 +118,27 @@ class MarketSimulator:
             out.append(row)
         return out
 
+    def enable_microstructure_feedback(
+        self,
+        regime_micro_weight: float = 0.25,
+        fundamental_micro_feedback: float = 0.10,
+    ) -> None:
+        """
+        Enable microstructure-to-macro coupling.
+
+        regime_micro_weight: weight in [0, 1] for micro return in realized-vol signal
+        fundamental_micro_feedback: strength for nudging projected fundamental by micro return
+        """
+        self.use_micro_feedback = True
+        self.regime_micro_weight = max(0.0, min(1.0, float(regime_micro_weight)))
+        self.fundamental_micro_feedback = max(0.0, min(1.0, float(fundamental_micro_feedback)))
+
+    def disable_microstructure_feedback(self) -> None:
+        """Disable microstructure-to-macro coupling."""
+        self.use_micro_feedback = False
+        self.regime_micro_weight = 0.0
+        self.fundamental_micro_feedback = 0.0
+
 
     # ---------- Volatility regime updater ----------
     def _update_vol_regime(self, new_fundamental_price: float) -> None:
@@ -124,10 +149,22 @@ class MarketSimulator:
             self._last_fundamental_price = new_fundamental_price
             return
 
-        r = math.log(new_fundamental_price / self._last_fundamental_price)
+        r_fund = math.log(new_fundamental_price / self._last_fundamental_price)
         self._last_fundamental_price = new_fundamental_price
 
-        self._ret_window.append(r)
+        r_used = r_fund
+        micro_now = float(self.order_book.last_price) if self.order_book.last_price is not None else None
+        if micro_now is not None:
+            if self._last_micro_price is None:
+                self._last_micro_price = micro_now
+            else:
+                if self.use_micro_feedback and self.regime_micro_weight > 0.0 and self._last_micro_price > 0:
+                    r_micro = math.log(micro_now / self._last_micro_price)
+                    w = self.regime_micro_weight
+                    r_used = (1.0 - w) * r_fund + w * r_micro
+                self._last_micro_price = micro_now
+
+        self._ret_window.append(r_used)
         if len(self._ret_window) > self._regime_window:
             self._ret_window.pop(0)
 
@@ -163,6 +200,7 @@ class MarketSimulator:
         self.regime = "neutral"
         self._ret_window = []
         self._last_fundamental_price = None
+        self._last_micro_price = None
 
         if self._history_prices:
             self._fundamental_price = self._history_prices[0]
@@ -292,6 +330,10 @@ class MarketSimulator:
                 dt = 1.0
                 z = self._sample_standard_normal()
                 log_ret = (mu - 0.5 * sigma * sigma) * dt + sigma * math.sqrt(dt) * z
+                if self.use_micro_feedback and self.fundamental_micro_feedback > 0.0 and self._last_micro_price and self._last_micro_price > 0:
+                    r_micro = math.log(float(self.order_book.last_price) / self._last_micro_price)
+                    # Conservative coupling to avoid destabilizing the macro process.
+                    log_ret += self.fundamental_micro_feedback * r_micro
                 new_price = self._fundamental_price * math.exp(log_ret)
 
         self._fundamental_price = float(new_price)

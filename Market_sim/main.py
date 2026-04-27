@@ -3,11 +3,12 @@ Market Simulator Main Entry Point
 
 Demonstrates tokenized vs traditional CRE market simulation with regime dynamics.
 
-This demo uses EMPIRICAL transition matrices derived from:
+This demo uses transition matrices derived from:
 - Traditional CRE: 72+ years of historical data (1953-2025)
-- Tokenized/REIT: 20+ years of VNQ ETF data (2005-2026)
+- Tokenized/REIT-like: Bayesian posterior mean in outputs/bayesian_cre_transition.npz
+  (pooled O / NNN / WPC / ADC / VNQ; run scripts/bayesian_cre_transition.py first)
 
-Run 'python3 scripts/run_complete_analysis.py' to regenerate these matrices.
+Run 'python3 scripts/run_complete_analysis.py' to regenerate artifacts.
 """
 
 import os
@@ -131,27 +132,17 @@ P_TRADITIONAL = [
     [0.0000, 0.0000, 0.7500, 0.2500],  # panic    (0.5% of time, avg 1.3 months)
 ]
 
-# Tokenized/REIT: Empirical from VNQ data (2005-2026)
-# Source: analyze_reit_regimes.py analysis of VNQ ETF
-# Characteristics: Lower persistence (82% calm), high volatility (22.2% annual)
-# 9.8x more volatile than traditional CRE
-P_TOKENIZED = [
-    [0.8174, 0.1739, 0.0087, 0.0000],  # calm    (46.0% of time, avg 5.3 months)
-    [0.1887, 0.7736, 0.0283, 0.0094],  # neutral (42.1% of time, avg 4.4 months)
-    [0.0500, 0.2000, 0.7500, 0.0000],  # volatile (7.9% of time, avg 4.0 months)
-    [0.0000, 0.0000, 0.1000, 0.9000],  # panic    (4.0% of time, avg 10.0 months - sticky!)
-]
-
-
 def load_tokenized_transition_matrix() -> list[list[float]]:
     """
-    Prefer Bayesian posterior mean matrix for tokenized endpoint dynamics.
-    Falls back to empirical VNQ matrix if the Bayesian artifact is unavailable.
+    Bayesian posterior mean matrix for tokenized endpoint dynamics
+    (outputs/bayesian_cre_transition.npz).
     """
     npz_path = Path(__file__).resolve().parent / "outputs" / "bayesian_cre_transition.npz"
-    if npz_path.exists():
-        return np.load(npz_path)["P_mean"].tolist()
-    return P_TOKENIZED
+    if not npz_path.exists():
+        raise FileNotFoundError(
+            f"Missing {npz_path}. Run: python3 scripts/bayesian_cre_transition.py"
+        )
+    return np.load(npz_path)["P_mean"].tolist()
 
 
 def main():

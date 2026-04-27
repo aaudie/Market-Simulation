@@ -11,12 +11,14 @@ These are mathematically exact results — no simulation needed.
 
 Data sources:
   - P_TRADITIONAL: assumed illiquid CRE matrix
-  - P_TOKENIZED:   empirical from VNQ ETF (2005-2026, 253 months)
-  - Observation counts inferred from regime frequency reports in FINDINGS_SUMMARY.md
+  - P_TOKENIZED:   Bayesian posterior mean from bayesian_cre_transition.npz
+                   (pooled O / NNN / WPC / ADC / VNQ; run bayesian_cre_transition.py first)
+  - Bootstrap row totals: pooled transition count row sums from the same .npz
 """
 
 import sys
 from pathlib import Path
+from typing import Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -39,21 +41,30 @@ P_TRADITIONAL = np.array([
     [0.01, 0.09, 0.30, 0.60],
 ])
 
-P_TOKENIZED = np.array([
-    [0.8174, 0.1739, 0.0087, 0.0000],
-    [0.1887, 0.7736, 0.0283, 0.0094],
-    [0.0500, 0.2000, 0.7500, 0.0000],
-    [0.0000, 0.0000, 0.1000, 0.9000],
-])
-
 # Approximate observation counts used for bootstrap CI estimation.
 # Traditional CRE: 871 months, regime split from CRE_BASELINE_ANALYSIS.md
 #   calm=58.7%, neutral=34.0%, volatile=6.8%, panic=0.5%
 COUNTS_TRADITIONAL = np.array([511, 296, 59, 4])
 
-# Tokenized/VNQ: 253 months, regime split from FINDINGS_SUMMARY.md
-#   calm=46.0%, neutral=42.1%, volatile=7.9%, panic=4.0%
-COUNTS_TOKENIZED = np.array([116, 107, 20, 10])
+_BAYESIAN_NPZ = Path(__file__).resolve().parent.parent / "outputs" / "bayesian_cre_transition.npz"
+
+
+def _load_bayesian_tokenized() -> Tuple[np.ndarray, np.ndarray]:
+    """Posterior-mean P and per-from-state transition totals for bootstrap."""
+    if not _BAYESIAN_NPZ.exists():
+        raise SystemExit(
+            f"Missing {_BAYESIAN_NPZ.resolve()}\n"
+            "Generate it with: python3 scripts/bayesian_cre_transition.py"
+        )
+    z = np.load(_BAYESIAN_NPZ)
+    P = np.asarray(z["P_mean"], dtype=float)
+    pooled = np.asarray(z["pooled_counts"], dtype=float)
+    row_totals = pooled.sum(axis=1)
+    row_totals = np.maximum(row_totals, 1.0)
+    return P, row_totals
+
+
+P_TOKENIZED, COUNTS_TOKENIZED = _load_bayesian_tokenized()
 
 
 # =============================================================================
@@ -330,11 +341,11 @@ def plot_results(
 def main():
     print("\n" + "=" * 70)
     print("  LAYER 1: ANALYTICAL MARKOV CHAIN ANALYSIS")
-    print("  Exact results from empirical transition matrices")
+    print("  Exact results from transition matrices (tokenized = Bayesian posterior mean)")
     print("=" * 70)
 
     _print_matrix(P_TRADITIONAL, "P_TRADITIONAL (Assumed illiquid CRE)")
-    _print_matrix(P_TOKENIZED,   "P_TOKENIZED (Empirical VNQ ETF, 2005-2026)")
+    _print_matrix(P_TOKENIZED,   "P_TOKENIZED (Bayesian posterior mean, pooled net-lease REITs)")
 
     pi_trad    = stationary_distribution(P_TRADITIONAL)
     pi_tok     = stationary_distribution(P_TOKENIZED)
@@ -349,7 +360,7 @@ def main():
 
     print_full_results("TRADITIONAL CRE (Illiquid)",
                        pi_trad, M_trad, soj_trad, pi_trad_lo, pi_trad_hi)
-    print_full_results("TOKENIZED CRE (REIT-like, Empirical VNQ)",
+    print_full_results("TOKENIZED CRE (REIT-like, Bayesian pooled matrix)",
                        pi_tok,  M_tok,  soj_tok,  pi_tok_lo,  pi_tok_hi)
 
     print(f"\n{'='*70}")

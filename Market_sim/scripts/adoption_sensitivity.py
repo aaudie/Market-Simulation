@@ -20,7 +20,8 @@ This script does two things:
 
 Data:
   rwa-token-timeseries-export-*.csv  (Bridged Token Value, daily)
-  Transition matrices: same as analytical_markov.py / housing_liquidity.py
+  P_TOKENIZED: Bayesian posterior mean from outputs/bayesian_cre_transition.npz
+               (run bayesian_cre_transition.py first)
 """
 
 import sys
@@ -50,12 +51,13 @@ P_TRADITIONAL = np.array([
     [0.01, 0.09, 0.30, 0.60],
 ])
 
-P_TOKENIZED = np.array([
-    [0.8174, 0.1739, 0.0087, 0.0000],
-    [0.1887, 0.7736, 0.0283, 0.0094],
-    [0.0500, 0.2000, 0.7500, 0.0000],
-    [0.0000, 0.0000, 0.1000, 0.9000],
-])
+_BAYESIAN_NPZ = Path(__file__).resolve().parent.parent / "outputs" / "bayesian_cre_transition.npz"
+if not _BAYESIAN_NPZ.exists():
+    raise SystemExit(
+        f"Missing {_BAYESIAN_NPZ.resolve()}\n"
+        "Generate it with: python3 scripts/bayesian_cre_transition.py"
+    )
+P_TOKENIZED = np.asarray(np.load(_BAYESIAN_NPZ)["P_mean"], dtype=float)
 
 # Path to the RWA dataset (copy in data/ directory)
 _SCRIPT_DIR = Path(__file__).resolve().parent
