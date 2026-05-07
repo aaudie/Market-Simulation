@@ -12,6 +12,7 @@ Key differences:
 
 import sys
 import os
+import argparse
 from pathlib import Path
 
 # Add parent directory to path to allow imports from sim package
@@ -28,6 +29,8 @@ from sim.market_simulator import MarketSimulator
 from sim.data_loader import load_cre_csv
 from sim.calibration import calibrate_from_history
 from sim.types import ScenarioParams
+from sim.agents.rule_based import Trader
+from sim.regimes import label_regime_from_realized_vol
 
 
 # =============================================================================
@@ -114,6 +117,46 @@ def calculate_metrics(prices: List[float], regimes: List[str]) -> Dict[str, Any]
     }
 
 
+def build_traditional_csv_baseline(
+    csv_path: str,
+    projection_start_idx: int,
+) -> Tuple[List[int], List[float], List[float], List[str], int]:
+    """
+    Build traditional scenario from CSV only (no simulation, no agents).
+
+    Uses full CSV observations end-to-end (no simulated extension). Projection
+    metrics are computed from `projection_start_idx` through the CSV end.
+    """
+    history = load_cre_csv(csv_path)
+    if not history:
+        raise ValueError(f"No historical data loaded from {csv_path}")
+
+    calib = calibrate_from_history(history)
+    history_prices = [p.price for p in history]
+
+    # Regime labeling from realized vol on the historical CSV path.
+    history_regimes: List[str] = []
+    ret_window: List[float] = []
+    regime_window = 6
+    prev_price: float | None = None
+    for price in history_prices:
+        if prev_price is not None and prev_price > 0 and price > 0:
+            ret_window.append(float(np.log(price / prev_price)))
+            if len(ret_window) > regime_window:
+                ret_window.pop(0)
+        prev_price = price
+
+        realized_sigma = float(np.std(ret_window)) if ret_window else float(calib.sigma_monthly)
+        history_regimes.append(label_regime_from_realized_vol(realized_sigma, calib.sigma_monthly))
+
+    prices = history_prices
+    regimes = history_regimes
+    months = list(range(len(prices)))
+    micro_prices = prices[:]  # CSV baseline has no separate micro path
+    history_len = max(1, min(int(projection_start_idx), len(prices)))
+    return months, prices, micro_prices, regimes, history_len
+
+
 # =============================================================================
 # SIMULATION RUNNER
 # =============================================================================
@@ -131,6 +174,8 @@ def run_simulation(
     use_micro_feedback: bool = False,
     regime_micro_weight: float = 0.25,
     fundamental_micro_feedback: float = 0.10,
+    trader_count: int = 1000,
+    projection_start_idx: int | None = None,
 ) -> Tuple[List[float], List[float], List[float], List[str], int]:
     """
     Run a single simulation with specified transition matrix
@@ -145,16 +190,24 @@ def run_simulation(
     # Create new simulator instance
     sim = MarketSimulator()
     sim.rng.seed(seed)
+    if trader_count != sim.trader_count:
+        sim.trader_count = trader_count
+        sim.traders = [Trader(sim.order_book, sim.rng) for _ in range(trader_count)]
     
     # Load and calibrate
     history = load_cre_csv(csv_path)
     calib = calibrate_from_history(history)
+    history_len_full = len(history)
+    history_len_replay = history_len_full if projection_start_idx is None else int(projection_start_idx)
+    history_len_replay = max(1, min(history_len_replay, history_len_full))
+    history_replay = history[:history_len_replay]
     
     if verbose:
         print(f"\n{'='*60}")
         print(f"Running {scenario_name} simulation")
         print(f"{'='*60}")
-        print(f"Historical data: {len(history)} months")
+        print(f"Historical data (full CSV): {history_len_full} months")
+        print(f"History replay before projection: {history_len_replay} months")
         print(f"Calibrated μ (monthly): {calib.mu_monthly:.4f}")
         print(f"Calibrated σ (monthly): {calib.sigma_monthly:.4f}")
         print(f"Annualized return: {calib.mu_annual*100:.2f}%")
@@ -168,7 +221,7 @@ def run_simulation(
     )
     
     # Attach history and enable Markov regimes
-    sim.attach_history_and_scenario(history, scenario)
+    sim.attach_history_and_scenario(history_replay, scenario)
     if use_micro_feedback:
         sim.enable_microstructure_feedback(
             regime_micro_weight=regime_micro_weight,
@@ -179,7 +232,7 @@ def run_simulation(
         # Centre the sigmoid on the midpoint of the forward window so adoption goes
         # 0→1 across the actual projection period rather than saturating at 1.0
         # before projection even begins.
-        projection_start = len(history)
+        projection_start = history_len_replay
         sim.adoption_midpoint = projection_start + months_ahead // 2
         endpoint = tokenized_endpoint_matrix if tokenized_endpoint_matrix is not None else P_TOKENIZED
         sim.enable_adoption_markov_regimes(transition_matrix, endpoint, start_state="neutral")
@@ -192,7 +245,7 @@ def run_simulation(
     fund_prices = []
     regimes = []
     
-    total_months = len(history) + months_ahead
+    total_months = history_len_replay + months_ahead
     
     for m in range(total_months):
         # Run micro ticks
@@ -214,7 +267,7 @@ def run_simulation(
     if verbose:
         print(f"Simulation complete: {len(months)} months")
     
-    return months, fund_prices, micro_prices, regimes, len(history)
+    return months, fund_prices, micro_prices, regimes, history_len_replay
 
 
 # =============================================================================
@@ -232,6 +285,7 @@ def plot_comparison(
     tokenized_metrics_full: Dict,
     traditional_metrics_forward: Dict,
     tokenized_metrics_forward: Dict,
+    output_filename: str = "housing_liquidity_comparison.png",
 ):
     """Create comprehensive comparison plots"""
     
@@ -504,7 +558,7 @@ def plot_comparison(
     # Save to outputs directory
     script_dir = Path(__file__).resolve().parent
     outputs_dir = script_dir.parent / "outputs"
-    output_path = outputs_dir / 'housing_liquidity_comparison.png'
+    output_path = outputs_dir / output_filename
     plt.savefig(output_path, dpi=300, bbox_inches='tight')
     print(f"\nPlot saved: {output_path}")
     plt.show()
@@ -515,51 +569,131 @@ def plot_comparison(
 # =============================================================================
 
 def main():
+    parser = argparse.ArgumentParser(description="Run traditional vs tokenized housing liquidity simulation.")
+    parser.add_argument(
+        "--trader-count",
+        type=int,
+        default=1000,
+        help="Number of trader bots for the tokenized scenario.",
+    )
+    parser.add_argument(
+        "--comparison-mode",
+        choices=("csv_benchmark", "sim_projection"),
+        default="csv_benchmark",
+        help=(
+            "csv_benchmark: traditional is observed CSV with projection from month 700 to CSV end; "
+            "sim_projection: both paths are simulated from CSV end, traditional fixed at 1000 bots."
+        ),
+    )
+    parser.add_argument(
+        "--csv-projection-start",
+        type=int,
+        default=700,
+        help="Projection start month for csv_benchmark mode.",
+    )
+    parser.add_argument(
+        "--projection-months",
+        type=int,
+        default=120,
+        help="Forward projection months for sim_projection mode.",
+    )
+    args = parser.parse_args()
+    if args.trader_count <= 0:
+        raise ValueError("--trader-count must be a positive integer.")
+    if args.projection_months <= 0:
+        raise ValueError("--projection-months must be a positive integer.")
+    if args.csv_projection_start < 0:
+        raise ValueError("--csv-projection-start must be non-negative.")
+
     # Configuration
     # Get path to data directory relative to this script
     script_dir = Path(__file__).resolve().parent
     data_dir = script_dir.parent / "data"
     CSV_PATH = str(data_dir / "cre_monthly.csv")
-    MONTHS_AHEAD = 120  # Project 10 years into future
     TICKS_PER_CANDLE = 50
     SEED = 42
     USE_MICRO_FEEDBACK = True
     REGIME_MICRO_WEIGHT = 0.25
     FUNDAMENTAL_MICRO_FEEDBACK = 0.10
+    TOKENIZED_TRADER_COUNT = args.trader_count
+    TRADITIONAL_SIM_TRADER_COUNT = 1000
     
     print("\n" + "="*70)
     print(" HOUSING MARKET LIQUIDITY COMPARISON")
     print(" Traditional (Illiquid) vs Tokenized (REIT-like)")
     print(" Tokenized run uses adoption-weighted Markov interpolation to Bayesian endpoint")
+    print(f" Comparison mode: {args.comparison_mode}")
+    print(f" Tokenized trader bots (sweep variable): {TOKENIZED_TRADER_COUNT}")
     print("="*70)
-    
-    # Run Traditional simulation
-    months, traditional_prices, traditional_micro_prices, traditional_regimes, history_len = run_simulation(
-        csv_path=CSV_PATH,
-        months_ahead=MONTHS_AHEAD,
-        ticks_per_candle=TICKS_PER_CANDLE,
-        transition_matrix=P_TRADITIONAL,
-        scenario_name="Traditional Housing (Illiquid)",
-        seed=SEED,
-        use_micro_feedback=USE_MICRO_FEEDBACK,
-        regime_micro_weight=REGIME_MICRO_WEIGHT,
-        fundamental_micro_feedback=FUNDAMENTAL_MICRO_FEEDBACK,
-    )
-    
-    # Run Tokenized simulation
-    _, tokenized_prices, tokenized_micro_prices, tokenized_regimes, _ = run_simulation(
-        csv_path=CSV_PATH,
-        months_ahead=MONTHS_AHEAD,
-        ticks_per_candle=TICKS_PER_CANDLE,
-        transition_matrix=P_TRADITIONAL,
-        scenario_name="Tokenized Housing (REIT-like)",
-        adoption_interpolated_markov=True,
-        tokenized_endpoint_matrix=P_TOKENIZED,
-        seed=SEED,
-        use_micro_feedback=USE_MICRO_FEEDBACK,
-        regime_micro_weight=REGIME_MICRO_WEIGHT,
-        fundamental_micro_feedback=FUNDAMENTAL_MICRO_FEEDBACK,
-    )
+
+    full_history = load_cre_csv(CSV_PATH)
+    if args.comparison_mode == "csv_benchmark":
+        projection_start_month = args.csv_projection_start
+        if len(full_history) <= projection_start_month:
+            raise ValueError(
+                f"Projection start month {projection_start_month} is outside CSV length {len(full_history)}."
+            )
+        months_ahead = len(full_history) - projection_start_month
+        print(" Traditional path source: CSV only (no simulator agents)")
+        print(f" Projection window: month {projection_start_month} to month {len(full_history) - 1}")
+
+        # Tokenized simulation aligned to the same month range.
+        months, tokenized_prices, tokenized_micro_prices, tokenized_regimes, history_len = run_simulation(
+            csv_path=CSV_PATH,
+            months_ahead=months_ahead,
+            ticks_per_candle=TICKS_PER_CANDLE,
+            transition_matrix=P_TRADITIONAL,
+            scenario_name="Tokenized Housing (REIT-like)",
+            adoption_interpolated_markov=True,
+            tokenized_endpoint_matrix=P_TOKENIZED,
+            seed=SEED,
+            use_micro_feedback=USE_MICRO_FEEDBACK,
+            regime_micro_weight=REGIME_MICRO_WEIGHT,
+            fundamental_micro_feedback=FUNDAMENTAL_MICRO_FEEDBACK,
+            trader_count=TOKENIZED_TRADER_COUNT,
+            projection_start_idx=projection_start_month,
+        )
+
+        # Traditional path is observed data.
+        _, traditional_prices, traditional_micro_prices, traditional_regimes, _ = build_traditional_csv_baseline(
+            csv_path=CSV_PATH,
+            projection_start_idx=projection_start_month,
+        )
+    else:
+        months_ahead = args.projection_months
+        print(" Traditional path source: simulated projection from CSV end")
+        print(f" Traditional simulated trader bots (fixed): {TRADITIONAL_SIM_TRADER_COUNT}")
+        print(f" Projection window: month {len(full_history)} to month {len(full_history) + months_ahead - 1}")
+
+        # Traditional simulation stays fixed at 1000 trader bots.
+        _, traditional_prices, traditional_micro_prices, traditional_regimes, history_len = run_simulation(
+            csv_path=CSV_PATH,
+            months_ahead=months_ahead,
+            ticks_per_candle=TICKS_PER_CANDLE,
+            transition_matrix=P_TRADITIONAL,
+            scenario_name="Traditional Housing (Illiquid, Simulated Projection)",
+            seed=SEED,
+            use_micro_feedback=USE_MICRO_FEEDBACK,
+            regime_micro_weight=REGIME_MICRO_WEIGHT,
+            fundamental_micro_feedback=FUNDAMENTAL_MICRO_FEEDBACK,
+            trader_count=TRADITIONAL_SIM_TRADER_COUNT,
+        )
+
+        # Tokenized simulation uses requested sweep trader count.
+        months, tokenized_prices, tokenized_micro_prices, tokenized_regimes, _ = run_simulation(
+            csv_path=CSV_PATH,
+            months_ahead=months_ahead,
+            ticks_per_candle=TICKS_PER_CANDLE,
+            transition_matrix=P_TRADITIONAL,
+            scenario_name="Tokenized Housing (REIT-like)",
+            adoption_interpolated_markov=True,
+            tokenized_endpoint_matrix=P_TOKENIZED,
+            seed=SEED,
+            use_micro_feedback=USE_MICRO_FEEDBACK,
+            regime_micro_weight=REGIME_MICRO_WEIGHT,
+            fundamental_micro_feedback=FUNDAMENTAL_MICRO_FEEDBACK,
+            trader_count=TOKENIZED_TRADER_COUNT,
+        )
     
     # Calculate metrics
     print("\n" + "="*70)
@@ -584,7 +718,7 @@ def main():
     print("\n" + "="*70)
     print("RESULTS SUMMARY")
     print("="*70)
-    print(f"\nHistory replay months: {history_len} | Forward projection months: {MONTHS_AHEAD}")
+    print(f"\nHistory replay months: {history_len} | Forward projection months: {months_ahead}")
 
     print("\nFULL PERIOD (History + Projection):")
     print(f"  Traditional Return: {traditional_metrics_full['total_return']:.2f}% | Tokenized Return: {tokenized_metrics_full['total_return']:.2f}%")
@@ -615,6 +749,18 @@ def main():
     print("\n" + "="*70)
     print("GENERATING VISUALIZATIONS")
     print("="*70)
+    if args.comparison_mode == "csv_benchmark":
+        output_filename = (
+            "housing_liquidity_comparison.png"
+            if TOKENIZED_TRADER_COUNT == 1000
+            else f"housing_liquidity_comparison_csv_{TOKENIZED_TRADER_COUNT}_traders.png"
+        )
+    else:
+        output_filename = (
+            "housing_liquidity_comparison_sim_projection.png"
+            if TOKENIZED_TRADER_COUNT == 1000
+            else f"housing_liquidity_comparison_sim_projection_{TOKENIZED_TRADER_COUNT}_traders.png"
+        )
     
     # Create plots
     plot_comparison(
@@ -628,6 +774,7 @@ def main():
         tokenized_metrics_full=tokenized_metrics_full,
         traditional_metrics_forward=traditional_metrics_forward,
         tokenized_metrics_forward=tokenized_metrics_forward,
+        output_filename=output_filename,
     )
 
     print("\n" + "="*70)
