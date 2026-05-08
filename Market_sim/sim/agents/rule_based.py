@@ -18,7 +18,15 @@ class Trader:
     adjusting for inventory position and market conditions.
     """
     
-    def __init__(self, order_book: OrderBook, rng: random.Random) -> None:
+    def __init__(
+        self,
+        order_book: OrderBook,
+        rng: random.Random,
+        trader_id: int = 0,
+        cash: float = 10_000.0,
+        inventory: float = 0.0,
+        base_qty: int = 2,
+    ) -> None:
         """
         Initialize trader.
         
@@ -28,6 +36,10 @@ class Trader:
         """
         self.order_book = order_book
         self.rng = rng
+        self.trader_id = int(trader_id)
+        self.cash = float(max(0.0, cash))
+        self.inventory = float(max(0.0, inventory))
+        self.base_qty = int(max(1, base_qty))
 
     def try_place_orders(self) -> None:
         """
@@ -84,12 +96,34 @@ class Trader:
         urgency = 1.0 + 0.5 * abs(inv_norm)
         qty = max(1, int(base_qty * urgency))
 
-        # Place two-sided quotes
-        ob.place_order(bid, qty, True)    # bid
-        ob.place_order(ask, qty, False)   # ask
+        # Wallet constraints:
+        # - buy quote bounded by available cash
+        # - sell quote bounded by inventory
+        max_buy_qty = int(self.cash // max(1, bid))
+        max_sell_qty = int(max(0.0, self.inventory))
+        buy_qty = min(qty, max_buy_qty)
+        sell_qty = min(qty, max_sell_qty)
+
+        if buy_qty > 0:
+            ob.place_order(bid, buy_qty, True)
+        if sell_qty > 0:
+            ob.place_order(ask, sell_qty, False)
 
         # Occasionally generate market orders for volume
         if self.rng.random() < 0.10:  # 10% chance
             is_buy = self.rng.random() < 0.5
             mkt_qty = self.rng.randint(1, 5)
-            ob.market.place_market_order(mkt_qty, is_buy)
+            px = max(1, int(ob.last_price))
+            if is_buy:
+                max_mkt_buy_qty = int(self.cash // px)
+                exec_qty = min(mkt_qty, max_mkt_buy_qty)
+                if exec_qty > 0:
+                    ob.market.place_market_order(exec_qty, True)
+                    self.cash -= exec_qty * px
+                    self.inventory += exec_qty
+            else:
+                exec_qty = min(mkt_qty, int(max(0.0, self.inventory)))
+                if exec_qty > 0:
+                    ob.market.place_market_order(exec_qty, False)
+                    self.cash += exec_qty * px
+                    self.inventory -= exec_qty

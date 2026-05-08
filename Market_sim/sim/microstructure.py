@@ -90,6 +90,11 @@ class OrderBook:
         self.best_bid: int = 0
         self.best_ask: int = 2**31 - 1
 
+        # Cached totals so liquidity-sufficiency checks (called every tick)
+        # don't have to walk all price levels of each side.
+        self._buy_book_qty: int = 0
+        self._sell_book_qty: int = 0
+
         self.total_buy_volume: int = 0
         self.total_sell_volume: int = 0
         self.imbalance: float = 0.0
@@ -99,10 +104,41 @@ class OrderBook:
 
         self.trader_activity_rate: float = market.trader_activity_rate
 
+    # Sentinels so callers can recognize "no liquidity on this side".
+    _NO_BID: int = 0
+    _NO_ASK: int = 2**31 - 1
+
     def _refresh_best_prices(self) -> None:
-        """Update best bid and ask prices from order books."""
-        self.best_bid = max(self.buy_book.keys()) if self.buy_book else 0
-        self.best_ask = min(self.sell_book.keys()) if self.sell_book else 2**31 - 1
+        """
+        Recompute best bid/ask by scanning all price levels.
+
+        Kept for callers that mutate ``buy_book`` / ``sell_book`` directly
+        (e.g. ``MarketSimulator`` reseeding paths). Hot paths use
+        incremental updates instead and avoid this O(n) scan.
+        """
+        self.best_bid = max(self.buy_book.keys()) if self.buy_book else self._NO_BID
+        self.best_ask = min(self.sell_book.keys()) if self.sell_book else self._NO_ASK
+
+    def _rescan_best_bid(self) -> None:
+        self.best_bid = max(self.buy_book.keys()) if self.buy_book else self._NO_BID
+
+    def _rescan_best_ask(self) -> None:
+        self.best_ask = min(self.sell_book.keys()) if self.sell_book else self._NO_ASK
+
+    def _clear_books(self) -> None:
+        """
+        Drop all resting orders and reset cached aggregates.
+
+        Use this instead of calling ``buy_book.clear()`` / ``sell_book.clear()``
+        directly so the cached qty totals and best-price sentinels stay
+        consistent with the dict state.
+        """
+        self.buy_book.clear()
+        self.sell_book.clear()
+        self._buy_book_qty = 0
+        self._sell_book_qty = 0
+        self.best_bid = self._NO_BID
+        self.best_ask = self._NO_ASK
 
     def _make_order(self, price: int, qty: int, is_buy: bool) -> None:
         """
@@ -116,10 +152,19 @@ class OrderBook:
         if qty <= 0:
             return
         if is_buy:
+            # Empty-book check must precede the defaultdict access (which would
+            # create the key and make len()==1 even before we set best_bid).
+            book_was_empty = not self.buy_book
             self.buy_book[price] += qty
+            self._buy_book_qty += qty
+            if book_was_empty or price > self.best_bid:
+                self.best_bid = price
         else:
+            book_was_empty = not self.sell_book
             self.sell_book[price] += qty
-        self._refresh_best_prices()
+            self._sell_book_qty += qty
+            if book_was_empty or price < self.best_ask:
+                self.best_ask = price
 
     def place_order(self, limit_price: float, qty: int, is_buy: bool) -> None:
         """
@@ -146,7 +191,9 @@ class OrderBook:
                 trade_q = min(remaining, avail)
 
                 self.sell_book[trade_price] -= trade_q
-                if self.sell_book[trade_price] <= 0:
+                self._sell_book_qty -= trade_q
+                level_emptied = self.sell_book[trade_price] <= 0
+                if level_emptied:
                     del self.sell_book[trade_price]
 
                 self.total_buy_volume += trade_q
@@ -161,7 +208,10 @@ class OrderBook:
                 )
 
                 remaining -= trade_q
-                self._refresh_best_prices()
+                # Only rescan when the consumed level disappears — partial
+                # fills leave best_ask unchanged so we skip the O(n) scan.
+                if level_emptied:
+                    self._rescan_best_ask()
 
         # Match sell order against buy book
         else:
@@ -171,7 +221,9 @@ class OrderBook:
                 trade_q = min(remaining, avail)
 
                 self.buy_book[trade_price] -= trade_q
-                if self.buy_book[trade_price] <= 0:
+                self._buy_book_qty -= trade_q
+                level_emptied = self.buy_book[trade_price] <= 0
+                if level_emptied:
                     del self.buy_book[trade_price]
 
                 self.total_sell_volume += trade_q
@@ -186,7 +238,8 @@ class OrderBook:
                 )
 
                 remaining -= trade_q
-                self._refresh_best_prices()
+                if level_emptied:
+                    self._rescan_best_bid()
 
         # Update last price and imbalance
         if self.last_traded_price > 0:
@@ -224,13 +277,13 @@ class OrderBook:
         levels = 5  # Number of price levels to seed
         qty_per_level = min_depth // levels
         
-        # Seed buy side if thin
-        if not self.buy_book or sum(self.buy_book.values()) < min_depth:
+        # Seed buy side if thin (uses cached total to avoid scanning levels).
+        if self._buy_book_qty < min_depth:
             for i in range(1, levels + 1):
                 self._make_order(max(1, last_price - i), qty_per_level, True)
-        
+
         # Seed sell side if thin
-        if not self.sell_book or sum(self.sell_book.values()) < min_depth:
+        if self._sell_book_qty < min_depth:
             for i in range(1, levels + 1):
                 self._make_order(last_price + i, qty_per_level, False)
 
@@ -246,9 +299,11 @@ class OrderBook:
         """
         self.buy_book.clear()
         self.sell_book.clear()
+        self._buy_book_qty = 0
+        self._sell_book_qty = 0
 
-        self.best_bid = 0
-        self.best_ask = 2**31 - 1
+        self.best_bid = self._NO_BID
+        self.best_ask = self._NO_ASK
 
         self.total_buy_volume = 0
         self.total_sell_volume = 0

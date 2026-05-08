@@ -29,7 +29,6 @@ from sim.market_simulator import MarketSimulator
 from sim.data_loader import load_cre_csv
 from sim.calibration import calibrate_from_history
 from sim.types import ScenarioParams
-from sim.agents.rule_based import Trader
 from sim.regimes import label_regime_from_realized_vol
 
 
@@ -175,6 +174,8 @@ def run_simulation(
     regime_micro_weight: float = 0.25,
     fundamental_micro_feedback: float = 0.10,
     trader_count: int = 1000,
+    capital_multiple: float = 40.0,
+    trader_base_qty: int = 2,
     projection_start_idx: int | None = None,
 ) -> Tuple[List[float], List[float], List[float], List[str], int]:
     """
@@ -190,9 +191,9 @@ def run_simulation(
     # Create new simulator instance
     sim = MarketSimulator()
     sim.rng.seed(seed)
-    if trader_count != sim.trader_count:
-        sim.trader_count = trader_count
-        sim.traders = [Trader(sim.order_book, sim.rng) for _ in range(trader_count)]
+    sim.trader_count = trader_count
+    sim.capital_multiple = float(capital_multiple)
+    sim.trader_base_qty = int(max(1, trader_base_qty))
     
     # Load and calibrate
     history = load_cre_csv(csv_path)
@@ -222,6 +223,7 @@ def run_simulation(
     
     # Attach history and enable Markov regimes
     sim.attach_history_and_scenario(history_replay, scenario)
+    sim._build_traders(initial_price=sim.order_book.last_price)
     if use_micro_feedback:
         sim.enable_microstructure_feedback(
             regime_micro_weight=regime_micro_weight,
@@ -597,6 +599,18 @@ def main():
         default=120,
         help="Forward projection months for sim_projection mode.",
     )
+    parser.add_argument(
+        "--capital-multiple",
+        type=float,
+        default=40.0,
+        help="Total deployable capital multiple: C = k * N * P0 * base_qty.",
+    )
+    parser.add_argument(
+        "--trader-base-qty",
+        type=int,
+        default=2,
+        help="Baseline quote size used when constructing trader wallets.",
+    )
     args = parser.parse_args()
     if args.trader_count <= 0:
         raise ValueError("--trader-count must be a positive integer.")
@@ -604,6 +618,10 @@ def main():
         raise ValueError("--projection-months must be a positive integer.")
     if args.csv_projection_start < 0:
         raise ValueError("--csv-projection-start must be non-negative.")
+    if args.capital_multiple <= 0:
+        raise ValueError("--capital-multiple must be positive.")
+    if args.trader_base_qty <= 0:
+        raise ValueError("--trader-base-qty must be positive.")
 
     # Configuration
     # Get path to data directory relative to this script
@@ -617,6 +635,8 @@ def main():
     FUNDAMENTAL_MICRO_FEEDBACK = 0.10
     TOKENIZED_TRADER_COUNT = args.trader_count
     TRADITIONAL_SIM_TRADER_COUNT = 1000
+    CAPITAL_MULTIPLE = args.capital_multiple
+    TRADER_BASE_QTY = args.trader_base_qty
     
     print("\n" + "="*70)
     print(" HOUSING MARKET LIQUIDITY COMPARISON")
@@ -624,6 +644,8 @@ def main():
     print(" Tokenized run uses adoption-weighted Markov interpolation to Bayesian endpoint")
     print(f" Comparison mode: {args.comparison_mode}")
     print(f" Tokenized trader bots (sweep variable): {TOKENIZED_TRADER_COUNT}")
+    print(f" Capital multiple (k): {CAPITAL_MULTIPLE:.2f}")
+    print(f" Trader base qty: {TRADER_BASE_QTY}")
     print("="*70)
 
     full_history = load_cre_csv(CSV_PATH)
@@ -651,6 +673,8 @@ def main():
             regime_micro_weight=REGIME_MICRO_WEIGHT,
             fundamental_micro_feedback=FUNDAMENTAL_MICRO_FEEDBACK,
             trader_count=TOKENIZED_TRADER_COUNT,
+            capital_multiple=CAPITAL_MULTIPLE,
+            trader_base_qty=TRADER_BASE_QTY,
             projection_start_idx=projection_start_month,
         )
 
@@ -677,6 +701,8 @@ def main():
             regime_micro_weight=REGIME_MICRO_WEIGHT,
             fundamental_micro_feedback=FUNDAMENTAL_MICRO_FEEDBACK,
             trader_count=TRADITIONAL_SIM_TRADER_COUNT,
+            capital_multiple=CAPITAL_MULTIPLE,
+            trader_base_qty=TRADER_BASE_QTY,
         )
 
         # Tokenized simulation uses requested sweep trader count.
@@ -693,6 +719,8 @@ def main():
             regime_micro_weight=REGIME_MICRO_WEIGHT,
             fundamental_micro_feedback=FUNDAMENTAL_MICRO_FEEDBACK,
             trader_count=TOKENIZED_TRADER_COUNT,
+            capital_multiple=CAPITAL_MULTIPLE,
+            trader_base_qty=TRADER_BASE_QTY,
         )
     
     # Calculate metrics

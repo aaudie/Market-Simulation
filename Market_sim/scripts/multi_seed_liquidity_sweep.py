@@ -4,19 +4,29 @@ Multi-seed robustness sweep for housing liquidity comparison.
 Runs the existing traditional-vs-tokenized sim_projection workflow across
 multiple random seeds and trader counts, then reports aggregate statistics.
 
+Output CSV schema includes the capital allocation parameters used for each row
+(capital_multiple, trader_base_qty), so multiple capital regimes can coexist
+in the same merged CSV without colliding on (seed, trader_count).
+
 Usage:
   python3 scripts/multi_seed_liquidity_sweep.py
   python3 scripts/multi_seed_liquidity_sweep.py --num-seeds 100 --seed-start 100
   python3 scripts/multi_seed_liquidity_sweep.py --trader-counts 1000,2000,5000
+  python3 scripts/multi_seed_liquidity_sweep.py --capital-multiple 20 --trader-base-qty 2
 
 Unless --replace-csv is set, existing output CSV rows are preserved; new rows are
-merged by (seed, trader_count); duplicates are skipped without re-running.
+merged by (seed, trader_count, capital_multiple, trader_base_qty); duplicates are
+skipped without re-running.
+
+Default --output-csv is multi_seed_liquidity_sweep_results_v2.csv to preserve the
+legacy multi_seed_liquidity_sweep_results.csv (which has no capital columns).
 """
 
 from __future__ import annotations
 
 import argparse
 import csv
+import time
 from pathlib import Path
 from typing import Any
 
@@ -79,6 +89,8 @@ def run_one_seed(
     regime_micro_weight: float,
     fundamental_micro_feedback: float,
     risk_free_rate_pct: float,
+    capital_multiple: float,
+    trader_base_qty: int,
 ) -> dict[str, Any]:
     # Traditional simulation stays fixed at 1000 trader bots.
     _, trad_prices, trad_micro_prices, trad_regimes, history_len = run_simulation(
@@ -93,6 +105,8 @@ def run_one_seed(
         regime_micro_weight=regime_micro_weight,
         fundamental_micro_feedback=fundamental_micro_feedback,
         trader_count=1000,
+        capital_multiple=capital_multiple,
+        trader_base_qty=trader_base_qty,
     )
 
     # Tokenized simulation uses swept trader count.
@@ -110,6 +124,8 @@ def run_one_seed(
         regime_micro_weight=regime_micro_weight,
         fundamental_micro_feedback=fundamental_micro_feedback,
         trader_count=trader_count,
+        capital_multiple=capital_multiple,
+        trader_base_qty=trader_base_qty,
     )
 
     trad_fwd = calculate_metrics(trad_prices[history_len:], trad_regimes[history_len:])
@@ -122,6 +138,8 @@ def run_one_seed(
     return {
         "seed": seed,
         "trader_count": trader_count,
+        "capital_multiple": float(capital_multiple),
+        "trader_base_qty": int(trader_base_qty),
         "traditional_return_fwd": trad_fwd["total_return"],
         "tokenized_return_fwd": tok_fwd["total_return"],
         "spread_return_fwd": tok_fwd["total_return"] - trad_fwd["total_return"],
@@ -143,6 +161,8 @@ def run_one_seed(
 RESULT_FIELDNAMES = [
     "seed",
     "trader_count",
+    "capital_multiple",
+    "trader_base_qty",
     "traditional_return_fwd",
     "tokenized_return_fwd",
     "spread_return_fwd",
@@ -162,20 +182,34 @@ RESULT_FIELDNAMES = [
 
 
 def _coerce_saved_value(col: str, val: str) -> Any:
-    if col in ("seed", "trader_count"):
+    if col in ("seed", "trader_count", "trader_base_qty"):
         return int(float(val))
     return float(val)
 
 
+# Dedup key includes capital regime so multiple (capital_multiple, trader_base_qty)
+# sweeps can coexist in the same merged CSV without colliding on (seed, trader_count).
+RunKey = tuple[int, int, float, int]
+
+
+def _make_run_key(seed: int, trader_count: int, capital_multiple: float, trader_base_qty: int) -> RunKey:
+    return (
+        int(seed),
+        int(trader_count),
+        round(float(capital_multiple), 6),
+        int(trader_base_qty),
+    )
+
+
 def load_existing_results_csv(
     out_path: Path, fieldnames: list[str]
-) -> tuple[list[dict[str, Any]], set[tuple[int, int]]]:
-    """Load CSV; dedupe (seed, trader_count), keep first occurrence per key."""
+) -> tuple[list[dict[str, Any]], set[RunKey]]:
+    """Load CSV; dedupe (seed, trader_count, capital_multiple, trader_base_qty)."""
     if not out_path.exists():
         return [], set()
 
     rows_out: list[dict[str, Any]] = []
-    seen: set[tuple[int, int]] = set()
+    seen: set[RunKey] = set()
     dup_lines = 0
 
     with out_path.open(newline="", encoding="utf-8") as f:
@@ -192,9 +226,11 @@ def load_existing_results_csv(
         for raw in reader:
             if not raw or raw.get("seed") in ("", None):
                 continue
-            key = (
+            key = _make_run_key(
                 int(float(raw["seed"])),
                 int(float(raw["trader_count"])),
+                float(raw["capital_multiple"]),
+                int(float(raw["trader_base_qty"])),
             )
             if key in seen:
                 dup_lines += 1
@@ -206,6 +242,25 @@ def load_existing_results_csv(
     if dup_lines:
         print(f"  Note: skipped {dup_lines} duplicate CSV line(s); kept first of each key.")
     return rows_out, seen
+
+
+def _atomic_write_csv(out_path: Path, rows: list[dict[str, Any]], fieldnames: list[str]) -> None:
+    """Write rows to ``out_path`` atomically (temp + rename)."""
+    sorted_rows = sorted(
+        rows,
+        key=lambda r: (
+            round(float(r["capital_multiple"]), 6),
+            int(r["trader_base_qty"]),
+            int(r["trader_count"]),
+            int(r["seed"]),
+        ),
+    )
+    tmp_path = out_path.with_suffix(out_path.suffix + ".tmp")
+    with tmp_path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(sorted_rows)
+    tmp_path.replace(out_path)
 
 
 def main() -> None:
@@ -224,13 +279,30 @@ def main() -> None:
         "--risk-free-rate-pct",
         type=float,
         default=0.0,
-        help="Risk-free rate (%) used for Sharpe ratio calculations.",
+        help="Risk-free rate (%%) used for Sharpe ratio calculations.",
+    )
+    parser.add_argument(
+        "--capital-multiple",
+        type=float,
+        default=40.0,
+        help="Total deployable capital multiple: C = k * N * P0 * base_qty.",
+    )
+    parser.add_argument(
+        "--trader-base-qty",
+        type=int,
+        default=2,
+        help="Baseline quote size used when constructing trader wallets.",
     )
     parser.add_argument(
         "--output-csv",
         type=str,
-        default="multi_seed_liquidity_sweep_results.csv",
-        help="Output CSV filename written under outputs/.",
+        default="multi_seed_liquidity_sweep_results_v2.csv",
+        help=(
+            "Output CSV filename written under outputs/. "
+            "Defaults to a v2 file that includes capital_multiple and "
+            "trader_base_qty columns; the legacy "
+            "multi_seed_liquidity_sweep_results.csv is preserved untouched."
+        ),
     )
     parser.add_argument(
         "--replace-csv",
@@ -299,6 +371,10 @@ def main() -> None:
         raise ValueError("--max-seeds must be > 1.")
     if args.auto_stop_min_seeds > args.max_seeds:
         raise ValueError("--auto-stop-min-seeds cannot exceed --max-seeds.")
+    if args.capital_multiple <= 0:
+        raise ValueError("--capital-multiple must be positive.")
+    if args.trader_base_qty <= 0:
+        raise ValueError("--trader-base-qty must be positive.")
     valid_metrics = {
         "traditional_return_fwd",
         "tokenized_return_fwd",
@@ -339,11 +415,19 @@ def main() -> None:
 
     if args.replace_csv:
         all_rows: list[dict[str, Any]] = []
-        merged_seen: set[tuple[int, int]] = set()
+        merged_seen: set[RunKey] = set()
         print("  --replace-csv: starting from empty merged results.")
     else:
         all_rows, merged_seen = load_existing_results_csv(out_path, fieldnames)
-        print(f"  Loaded {len(all_rows)} existing row(s) from {out_path.name}.")
+        if not out_path.exists():
+            print(
+                f"  No prior {out_path.name} yet (normal on first run); "
+                "it is written when the full sweep finishes — interrupting leaves no file."
+            )
+        elif not all_rows:
+            print(f"  {out_path.name} exists but has no data rows; merging from empty.")
+        else:
+            print(f"  Loaded {len(all_rows)} existing row(s) from {out_path.name}.")
 
     use_micro_feedback = True
     regime_micro_weight = 0.25
@@ -362,6 +446,8 @@ def main() -> None:
     else:
         print(f"Seeds requested: {args.num_seeds}")
     print(f"Trader counts: {trader_counts}")
+    print(f"Capital multiple (k): {args.capital_multiple:.2f}")
+    print(f"Trader base qty: {args.trader_base_qty}")
     print("=" * 72)
 
     for tc in trader_counts:
@@ -384,13 +470,16 @@ def main() -> None:
 
             added_this_batch = 0
             skipped_overlap = 0
+            batch_start = time.perf_counter()
+            row_durations: list[float] = []
             for _ in range(batch_target):
                 seed = next_seed
                 next_seed += 1
-                key = (seed, tc)
+                key = _make_run_key(seed, tc, args.capital_multiple, args.trader_base_qty)
                 if key in merged_seen:
                     skipped_overlap += 1
                     continue
+                row_start = time.perf_counter()
                 row = run_one_seed(
                     csv_path=csv_path,
                     months_ahead=args.projection_months,
@@ -401,11 +490,31 @@ def main() -> None:
                     regime_micro_weight=regime_micro_weight,
                     fundamental_micro_feedback=fundamental_micro_feedback,
                     risk_free_rate_pct=args.risk_free_rate_pct,
+                    capital_multiple=args.capital_multiple,
+                    trader_base_qty=args.trader_base_qty,
+                )
+                row_dt = time.perf_counter() - row_start
+                row_durations.append(row_dt)
+                print(
+                    f"    seed={seed} tc={tc}: {row_dt:.1f}s "
+                    f"(spread={row['spread_return_fwd']:+.2f}%, "
+                    f"vol_spread={row['spread_volatility_fwd']:+.2f}%)",
+                    flush=True,
                 )
                 all_rows.append(row)
                 merged_seen.add(key)
                 seeds_run += 1
                 added_this_batch += 1
+                # Checkpoint after every row so Ctrl-C never wastes completed work.
+                _atomic_write_csv(out_path, all_rows, fieldnames)
+            batch_dt = time.perf_counter() - batch_start
+            if row_durations:
+                avg = sum(row_durations) / len(row_durations)
+                print(
+                    f"  batch wall time: {batch_dt:.1f}s "
+                    f"(mean {avg:.1f}s/row over {len(row_durations)} row(s))",
+                    flush=True,
+                )
 
             skip_msg = f", skipped_overlap={skipped_overlap}" if skipped_overlap else ""
             print(
@@ -423,7 +532,14 @@ def main() -> None:
                 )
                 break
 
-            subset = [r for r in all_rows if r["trader_count"] == tc]
+            # Restrict CI checks to the current capital regime so prior
+            # rows with different (k, base_qty) don't contaminate convergence.
+            subset = [
+                r for r in all_rows
+                if r["trader_count"] == tc
+                and round(float(r["capital_multiple"]), 6) == round(float(args.capital_multiple), 6)
+                and int(r["trader_base_qty"]) == int(args.trader_base_qty)
+            ]
             rel_changes: dict[str, float] = {}
             for metric in metric_list:
                 metric_values = [float(r[metric]) for r in subset]
@@ -453,23 +569,38 @@ def main() -> None:
                     )
                     break
 
-    all_rows.sort(key=lambda r: (int(r["trader_count"]), int(r["seed"])))
-
-    with out_path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(all_rows)
+    _atomic_write_csv(out_path, all_rows, fieldnames)
+    all_rows.sort(
+        key=lambda r: (
+            round(float(r["capital_multiple"]), 6),
+            int(r["trader_base_qty"]),
+            int(r["trader_count"]),
+            int(r["seed"]),
+        )
+    )
 
     print(f"\nSaved merged seed-level results ({len(all_rows)} row(s)) to: {out_path}")
 
-    # Print concise aggregated summary.
+    # Print concise aggregated summary, scoped to the current run's capital regime
+    # so blended (k, base_qty) regimes in the merged CSV don't contaminate stats.
     print("\n" + "=" * 72)
     print("AGGREGATED SUMMARY (Projection Window)")
+    print(
+        f"  Capital regime: capital_multiple={args.capital_multiple:.4f}, "
+        f"trader_base_qty={args.trader_base_qty}"
+    )
     print("=" * 72)
+    cm_key = round(float(args.capital_multiple), 6)
+    bq_key = int(args.trader_base_qty)
     for tc in trader_counts:
-        subset = [r for r in all_rows if r["trader_count"] == tc]
+        subset = [
+            r for r in all_rows
+            if r["trader_count"] == tc
+            and round(float(r["capital_multiple"]), 6) == cm_key
+            and int(r["trader_base_qty"]) == bq_key
+        ]
         if not subset:
-            print(f"\nTrader count {tc}: (no rows in merged CSV)")
+            print(f"\nTrader count {tc}: (no rows for this capital regime)")
             continue
         spread = [float(r["spread_return_fwd"]) for r in subset]
         tok = [float(r["tokenized_return_fwd"]) for r in subset]

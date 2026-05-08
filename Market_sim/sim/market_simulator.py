@@ -39,13 +39,16 @@ class MarketSimulator:
         self.market_speed: float = 10.0
         self.trader_count: int = 1000
         self.trader_activity_rate: float = 0.05  # 5% activity per tick
+        self.capital_multiple: float = 40.0
+        self.trader_base_qty: int = 2
 
         self.chart = Chart()
         self.live_candlestick = Candlestick()
         self.order_book: OrderBook = OrderBook(self)
 
         self.rng = random.Random()
-        self.traders = [Trader(self.order_book, self.rng) for _ in range(self.trader_count)]
+        self.traders: List[Trader] = []
+        self._build_traders(initial_price=self.order_book.last_price)
         self.batch_manager = BatchManager()
 
         # ---------- fundamental CRE + scenarios ----------
@@ -214,18 +217,18 @@ class MarketSimulator:
                 self.order_book.last_traded_price = self.target_price
 
                 # 2) Clear any stale liquidity seeded at the old default scale (~100)
-                self.order_book.buy_book.clear()
-                self.order_book.sell_book.clear()
+                self.order_book._clear_books()
 
                 # 3) Reseed the book around the new last_price so micro doesn't snap back
                 levels = 10          # depth on each side
                 qty_per_level = 5    # liquidity per level
                 for i in range(1, levels + 1):
-                    self.order_book.buy_book[self.target_price - i] = qty_per_level
-                    self.order_book.sell_book[self.target_price + i] = qty_per_level
-
-                # Ensure best prices are set correctly
-                self.order_book._refresh_best_prices()
+                    self.order_book._make_order(
+                        self.target_price - i, qty_per_level, True
+                    )
+                    self.order_book._make_order(
+                        self.target_price + i, qty_per_level, False
+                    )
 
                 # 4) Start the candle at the rebased micro price
                 self.live_candlestick.reset(self.order_book.last_price)
@@ -275,6 +278,58 @@ class MarketSimulator:
         u2 = 1.0 - self.rng.random()
         return math.sqrt(-2.0 * math.log(u1)) * math.cos(2.0 * math.pi * u2)
 
+    def _build_traders(self, initial_price: int) -> None:
+        """
+        Build traders with wallet heterogeneity.
+
+        Capital pool:
+            C_total = capital_multiple * N * P0 * base_qty
+        Then allocated by tiers:
+            - retail:       70% agents, 20% capital
+            - professional: 25% agents, 35% capital
+            - whales:        5% agents, 45% capital
+        Each trader's wealth in a tier is sampled lognormally and normalized to tier pool.
+        Wealth is split 50/50 cash vs inventory value at initialization.
+        """
+        n = max(1, int(self.trader_count))
+        p0 = max(1, int(initial_price))
+        base_qty = max(1, int(self.trader_base_qty))
+        c_total = float(self.capital_multiple) * n * p0 * base_qty
+
+        tier_agent_fracs = [0.70, 0.25, 0.05]
+        tier_capital_fracs = [0.20, 0.35, 0.45]
+
+        tier_counts = [int(n * f) for f in tier_agent_fracs]
+        tier_counts[-1] = n - sum(tier_counts[:-1])
+
+        traders: List[Trader] = []
+        trader_id = 0
+        lognormal_sigma = 0.50
+
+        for tier_count, cap_frac in zip(tier_counts, tier_capital_fracs):
+            if tier_count <= 0:
+                continue
+            tier_pool = c_total * cap_frac
+            raw = [self.rng.lognormvariate(0.0, lognormal_sigma) for _ in range(tier_count)]
+            raw_sum = sum(raw) if raw else 1.0
+            for w in raw:
+                wealth = tier_pool * (w / raw_sum)
+                cash = 0.50 * wealth
+                inv_units = (0.50 * wealth) / p0
+                traders.append(
+                    Trader(
+                        self.order_book,
+                        self.rng,
+                        trader_id=trader_id,
+                        cash=cash,
+                        inventory=inv_units,
+                        base_qty=base_qty,
+                    )
+                )
+                trader_id += 1
+
+        self.traders = traders
+
 
     def _scale_micro_to_fundamental_once(self) -> None:
         """Put micro on same price level as the fundamental *only once* (month 0).
@@ -303,8 +358,7 @@ class MarketSimulator:
         # set micro last price to the fundamental level
         self.order_book.last_price = int(self.target_price)
         # wipe any pre-seeded liquidity at the old scale and reseed around the new scale
-        self.order_book.buy_book.clear()
-        self.order_book.sell_book.clear()
+        self.order_book._clear_books()
         self.order_book.ensure_minimum_liquidity()
         # reset the live candle to the new micro level so charts don't mix scales
         self.live_candlestick.reset(self.order_book.last_price)
